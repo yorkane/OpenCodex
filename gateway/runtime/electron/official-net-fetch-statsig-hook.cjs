@@ -18,6 +18,10 @@ const STATSIG_DEFAULT_FEATURE_OVERRIDES = {
   "505458": true,
   artifacts: true,
 };
+// 官方 bundle 在 authed-route 模块初始化时调用 app-primary 的 side-effect 导出。真实网络下 Statsig
+// 初始化有 100ms+ 往返，天然给官方 side-effect 模块留出注册窗口；若 0ms 返回会抢跑，概率性触发
+// "n is not a function"。给合成响应加一个小延迟，复刻真实网络节奏，消除该竞态。
+const STATSIG_INITIALIZE_DELAY_MS = Math.max(0, Number(process.env.OPENCODEX_STATSIG_INITIALIZE_DELAY_MS ?? 400) || 0);
 
 function buildStatsigInitializeNetResponse() {
   const feature_gates = {};
@@ -88,6 +92,27 @@ function extractUrlFromNetFetchArgs(args) {
   return "";
 }
 
+// 构造官方 httpFetch 能消费的响应；优先用全局 Response，缺失时退回最小鸭子类型形状。
+function buildStatsigNetResponse(bodyJson, url, ResponseCtor) {
+  if (ResponseCtor) {
+    return new ResponseCtor(bodyJson, {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+  const buffer = Buffer.from(bodyJson, "utf-8");
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    url,
+    headers: { get: (name) => (String(name).toLowerCase() === "content-type" ? "application/json; charset=utf-8" : null) },
+    json: async () => JSON.parse(bodyJson),
+    text: async () => bodyJson,
+    arrayBuffer: async () => buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+  };
+}
+
 function installOfficialNetFetchStatsigHook(electronModule, options = {}) {
   const onIntercept = typeof options.onIntercept === "function" ? options.onIntercept : null;
   const nativeNet = electronModule && electronModule.net;
@@ -100,26 +125,15 @@ function installOfficialNetFetchStatsigHook(electronModule, options = {}) {
     fetch(...args) {
       const url = extractUrlFromNetFetchArgs(args);
       const bodyJson = statsigLocalResponseBodyForUrl(url);
-      if (bodyJson) {
-        if (onIntercept) onIntercept(url);
-        diagnosticLog("statsig-net-fetch", "net_fetch_served_local", { url: String(url).split("?")[0] });
-        if (ResponseCtor) {
-          return Promise.resolve(new ResponseCtor(bodyJson, { status: 200, headers: { "content-type": "application/json; charset=utf-8" } }));
-        }
-        // 兜底：万一没有全局 Response，就构造官方 httpFetch 会用到的最小响应形状。
-        const buffer = Buffer.from(bodyJson, "utf-8");
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          statusText: "OK",
-          url,
-          headers: { get: (name) => (String(name).toLowerCase() === "content-type" ? "application/json; charset=utf-8" : null) },
-          json: async () => JSON.parse(bodyJson),
-          text: async () => bodyJson,
-          arrayBuffer: async () => buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
-        });
+      if (!bodyJson) return nativeFetch(...args);
+      if (onIntercept) onIntercept(url);
+      diagnosticLog("statsig-net-fetch", "net_fetch_served_local", { url: String(url).split("?")[0] });
+      const deliver = () => buildStatsigNetResponse(bodyJson, url, ResponseCtor);
+      // 仅初始化响应加延迟以复刻真实往返、规避官方模块初始化竞态；遥测/异常上报保持即时。
+      if (String(url).includes("/v1/initialize") && STATSIG_INITIALIZE_DELAY_MS > 0) {
+        return new Promise((resolve) => setTimeout(() => resolve(deliver()), STATSIG_INITIALIZE_DELAY_MS));
       }
-      return nativeFetch(...args);
+      return Promise.resolve(deliver());
     },
   });
   registerOfficialElectronModuleOverride(electronModule, "net", hookedNet);
