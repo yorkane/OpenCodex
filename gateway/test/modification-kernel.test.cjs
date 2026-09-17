@@ -26,7 +26,7 @@ test("typed modification catalog assigns every point to a group and adapter chai
     ["browser", "gateway", "static", "runner"].map(
       (host) => MIGRATION_MATRIX.filter((entry) => entry.host === host).length
     ),
-    [38, 36, 25, 5]
+    [38, 37, 25, 5]
   );
   assert.equal(new Set(POINT_TARGETS).size, 104);
   assert.equal(new Set(POINT_DEFINITIONS.map((point) => point.id)).size, 104);
@@ -34,7 +34,7 @@ test("typed modification catalog assigns every point to a group and adapter chai
     ["web.runtime.", "gateway.runtime.", "static.cache."].map(
       (prefix) => POINT_DEFINITIONS.filter((point) => point.id.startsWith(prefix)).length
     ),
-    [38, 36, 30]
+    [38, 37, 30]
   );
   assert.equal(POINT_DEFINITIONS.every((point) => point.group && point.contributions.length > 0), true);
   assert.equal(POINT_DEFINITIONS.every((point) => point.contributions.every((item) => {
@@ -68,7 +68,7 @@ test("typed modification catalog assigns every point to a group and adapter chai
       "renderer-ui": 6,
       "browser-platform": 3,
       "web-network": 4,
-      "gateway-runtime": 9,
+      "gateway-runtime": 10,
       "gateway-ipc": 4,
       "official-main": 3,
       "renderer-resources": 8,
