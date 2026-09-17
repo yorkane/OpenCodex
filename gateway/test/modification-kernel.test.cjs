@@ -18,9 +18,9 @@ const {
 test("typed modification catalog assigns every point to a group and adapter chain", () => {
   assert.equal(POINT_GROUP_DEFINITIONS.length, 17);
   assert.equal(ADAPTER_DEFINITIONS.length, 23);
-  assert.equal(POINT_DEFINITIONS.length, 104);
-  assert.equal(POINT_TARGETS.length, 104);
-  assert.equal(MIGRATION_MATRIX.length, 104);
+  assert.equal(POINT_DEFINITIONS.length, 105);
+  assert.equal(POINT_TARGETS.length, 105);
+  assert.equal(MIGRATION_MATRIX.length, 105);
   assert.equal(MIGRATION_MATRIX.every((entry) => entry.migrationStatus === "migrated"), true);
   assert.deepEqual(
     ["browser", "gateway", "static", "runner"].map(
@@ -28,8 +28,8 @@ test("typed modification catalog assigns every point to a group and adapter chai
     ),
     [38, 37, 25, 5]
   );
-  assert.equal(new Set(POINT_TARGETS).size, 104);
-  assert.equal(new Set(POINT_DEFINITIONS.map((point) => point.id)).size, 104);
+  assert.equal(new Set(POINT_TARGETS).size, 105);
+  assert.equal(new Set(POINT_DEFINITIONS.map((point) => point.id)).size, 105);
   assert.deepEqual(
     ["web.runtime.", "gateway.runtime.", "static.cache."].map(
       (prefix) => POINT_DEFINITIONS.filter((point) => point.id.startsWith(prefix)).length
