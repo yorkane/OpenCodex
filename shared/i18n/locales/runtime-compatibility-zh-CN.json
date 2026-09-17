@@ -6,6 +6,7 @@
   "web.runtimeCompatibility.pluginTag": "插件",
   "web.runtimeCompatibility.points": "修改点",
   "web.runtimeCompatibility.pointsDescription": "每个修改点按开发者功能组归类；分组只用于查看，不影响启用、回退或执行决策。",
+  "web.runtimeCompatibility.point.web.runtime.network.telemetry-guard.description": "本地吞掉 Statsig XHR 与 Beacon 遥测。",
   "web.runtimeCompatibility.filters": "修改点筛选",
   "web.runtimeCompatibility.adapterFilter": "注入类型",
   "web.runtimeCompatibility.column.adapter": "注入类别",
