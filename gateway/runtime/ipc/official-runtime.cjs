@@ -1471,6 +1471,48 @@ function fetchMessageFromIpcArgs(args) {
   if (payload.type !== "fetch") return null;
   return typeof payload.url === "string" ? payload : null;
 }
+// Statsig 遥测（/ces/v1/rgstr 设备注册、/ces/v1/log_event 事件上报）由 renderer 通过
+// IPC fetch 委托给 Electron main 进程真实发 HTTP。受限网络下 Cloudflare 会返回 403 challenge，
+// 回包被转发回 renderer 后 Statsig 反复报错重试，控制台持续刷 NetworkError。
+// 这里在 IPC 层直接本地短路：不回官方 handler，按官方 fetch-response 协议回一个 200 成功，
+// 让 Statsig 认为上报完成，从源头消除该请求与控制台噪音。
+function isStatsigTelemetryFetchUrl(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    const pathname = parsed.pathname.replace(/\/+$/, "");
+    return parsed.hostname === "chatgpt.com" && (pathname === "/ces/v1/rgstr" || pathname === "/ces/v1/log_event");
+  } catch {
+    return false;
+  }
+}
+
+function sendStatsigTelemetryNoopResponse(message) {
+  const requestId = stringRouteId(message && message.requestId);
+  if (!requestId) return false;
+  routeOfficialWebContentsSend(MESSAGE_FOR_VIEW_CHANNEL, [
+    {
+      type: "fetch-response",
+      responseType: "success",
+      requestId,
+      status: 200,
+      headers: { "content-type": "application/json" },
+      bodyJsonString: "{}",
+    },
+  ]);
+  return true;
+}
+
+function maybeHandleStatsigTelemetryFetchNoop(channel, args) {
+  if (channel !== MESSAGE_FROM_VIEW_CHANNEL) return false;
+  const message = fetchMessageFromIpcArgs(args);
+  if (!message || !isStatsigTelemetryFetchUrl(message.url)) return false;
+  diagnosticLog("statsig-telemetry", "fetch_blocked_local", {
+    method: message.method || "",
+    url: String(message.url).split("?")[0],
+  });
+  return sendStatsigTelemetryNoopResponse(message);
+}
+
 
 function parseJsonLike(value) {
   if (value && typeof value === "object" && !Array.isArray(value)) return value;
@@ -2158,6 +2200,7 @@ async function invokeOfficialIpc(channel, args = [], context = {}) {
   // Computer Use 锁屏授权由官方 Installer 决定；这里额外记录同进程直接 status，方便和官方回包对照。
   logComputerUseAuthRequest(channel, invokeArgs);
   if (maybeHandleComputerUseAuthWriteNoop(channel, invokeArgs)) return true;
+  if (maybeHandleStatsigTelemetryFetchNoop(channel, invokeArgs)) return true;
   logDesktopFeatureAvailability(channel, invokeArgs);
   const handler = officialIpc.handlers.get(channel);
   if (handler) {
