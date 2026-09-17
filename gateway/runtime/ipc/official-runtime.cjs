@@ -2751,9 +2751,9 @@ function startOfficialRuntime(options = {}) {
   // 无外网出口的服务器上这条连接黑洞挂起，初始化永不 resolve，浏览器端被 Suspense 卡在加载页。
   // 这里覆写 electron.net，对 ab.chatgpt.com 初始化/异常上报和 chatgpt.com 遥测本地短路，其余透传。
   runRuntimeCompatibilityCapability(
-    gatewayPointRefs.electronModuleLoader,
+    gatewayPointRefs.netFetchStatsig,
     () => installOfficialNetFetchStatsigHook(electron, {
-      onIntercept: () => recordRuntimeCompatibilityHit(gatewayPointRefs.electronModuleLoader),
+      onIntercept: () => recordRuntimeCompatibilityHit(gatewayPointRefs.netFetchStatsig),
     })
   );
   runRuntimeCompatibilityCapability(
