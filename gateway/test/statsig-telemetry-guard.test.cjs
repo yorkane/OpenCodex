@@ -177,8 +177,8 @@ function createHarness() {
 test("telemetry XHR is swallowed locally and answered with a mock successful response", () => {
   const harness = createHarness();
   harness.install();
-  // 补丁装上即上报一次真实命中，运行时兼容调试页据此显示 active。
-  assert.equal(harness.scope.emits, 1);
+  // 骨架约定：安装完成只代表 ready，没有真实遥测流量时不该上报命中。
+  assert.equal(harness.scope.emits, 0);
 
   const xhr = new harness.FakeXHR();
   const handled = [];
@@ -189,6 +189,8 @@ test("telemetry XHR is swallowed locally and answered with a mock successful res
 
   xhr.send("telemetry-payload");
   assert.equal(harness.calls.send.length, 0, "telemetry must not reach the native send");
+  // 真实吞掉一条遥测才计一次命中，调试页据此从 ready 变为 active。
+  assert.equal(harness.scope.emits, 1);
   assert.deepEqual(xhr.events, ["loadstart"]);
   // 状态补齐必须延后：SDK 通常在 send 返回之后才挂 load 监听器。
   assert.equal(harness.timers.size, 1);
@@ -225,6 +227,7 @@ test("non-telemetry XHR keeps using the native send", () => {
     assert.equal(xhr.readyState, 0);
     assert.deepEqual(xhr.events, []);
   });
+  assert.equal(harness.scope.emits, 0, "passthrough traffic must not report a hit");
 });
 
 test("telemetry beacons report success without touching the native API", () => {
@@ -237,6 +240,7 @@ test("telemetry beacons report success without touching the native API", () => {
   );
   assert.equal(harness.window.navigator.sendBeacon("/ces/v1/log_event", "payload"), true);
   assert.equal(harness.calls.beacon.length, 0);
+  assert.equal(harness.scope.emits, 2, "each swallowed beacon reports one hit");
 
   assert.equal(
     harness.window.navigator.sendBeacon("https://example.com/ces/v1/rgstr", "payload"),
@@ -244,6 +248,7 @@ test("telemetry beacons report success without touching the native API", () => {
   );
   assert.equal(harness.calls.beacon.length, 1);
   assert.equal(harness.calls.beacon[0].url, "https://example.com/ces/v1/rgstr");
+  assert.equal(harness.scope.emits, 2, "a forwarded beacon must not report a hit");
 });
 
 test("loading the provider twice in one page generation installs a single patch", () => {
@@ -257,7 +262,7 @@ test("loading the provider twice in one page generation installs a single patch"
   assert.equal(harness.FakeXHR.prototype.open, patchedOpen);
   assert.equal(harness.FakeXHR.prototype.send, patchedSend);
   assert.equal(harness.window.navigator.sendBeacon, patchedBeacon);
-  assert.equal(harness.scope.emits, 1);
+  assert.equal(harness.scope.emits, 0, "installing alone never reports a hit");
   assert.equal(harness.scope.owned.length, 1);
 });
 
@@ -280,10 +285,12 @@ test("the dispose registered through own() restores the native prototypes", () =
   xhr.send("payload");
   assert.equal(harness.calls.send.length, 1, "restored prototype must stop swallowing");
   assert.equal(harness.timers.size, 0);
+  assert.equal(harness.scope.emits, 0, "traffic after dispose went through the native send");
 
   // 还原标记后新页面可以重新安装补丁。
   harness.install();
-  assert.equal(harness.scope.emits, 2);
+  assert.notEqual(harness.FakeXHR.prototype.open, originalOpen, "reinstall must patch again");
+  assert.equal(harness.scope.emits, 0);
 });
 
 test("the guard lives in its own provider while the upstream polyfill keeps no telemetry patch", () => {
@@ -383,13 +390,18 @@ test("the new point is cataloged once, bound once, and localized in both locales
     "the guard file must be exposed as a static asset"
   );
 
-  for (const locale of ["en-US", "zh-CN"]) {
-    const messages = JSON.parse(
-      fs.readFileSync(
-        path.join(REPO_ROOT, "shared", "i18n", "locales", "runtime-compatibility-" + locale + ".json"),
-        "utf8"
-      )
-    );
-    assert.ok(String(messages[I18N_KEY] || "").trim(), "missing " + I18N_KEY + " for " + locale);
-  }
+  // 英文必须显式给描述；zh-CN 语言包按仓库约定不承载任何修改点文案（中文取自 catalog.ts 的
+  // 中文描述并经 metadataText 回退），这里守住该约定不被悄悄破坏。
+  const localeDir = path.join(REPO_ROOT, "shared", "i18n", "locales");
+  const enMessages = JSON.parse(
+    fs.readFileSync(path.join(localeDir, "runtime-compatibility-en-US.json"), "utf8")
+  );
+  assert.ok(String(enMessages[I18N_KEY] || "").trim(), "missing " + I18N_KEY + " for en-US");
+  const zhMessages = JSON.parse(
+    fs.readFileSync(path.join(localeDir, "runtime-compatibility-zh-CN.json"), "utf8")
+  );
+  const zhPointKeys = Object.keys(zhMessages).filter((key) =>
+    key.startsWith("web.runtimeCompatibility.point.")
+  );
+  assert.deepEqual(zhPointKeys, [], "zh-CN keeps point descriptions in catalog.ts only");
 });

@@ -86,6 +86,8 @@
         return originalSend.call(this, body);
       }
 
+      // 按骨架约定，安装完成只代表 ready，命中只能在真实拦截发生时上报。
+      modificationEffects?.primary?.emit();
       // 跳过真实网络请求：loadstart 同步补发，其余状态异步补齐，
       // 因为 SDK 通常在 send 返回之后才注册 load 监听器。
       safeDispatch(xhr, "loadstart");
@@ -118,7 +120,10 @@
       } catch {
         target = String(url || "");
       }
-      if (isTelemetryUrl(target)) return true;
+      if (isTelemetryUrl(target)) {
+        modificationEffects?.primary?.emit();
+        return true;
+      }
       return boundSendBeacon(url, ...rest);
     };
     disposers.push(() => {
@@ -126,9 +131,8 @@
     });
   }
 
-  // 补丁装上即视为该修改点真实生效，上报一次命中。
-  modificationEffects?.primary?.emit();
-
+  // 安装完成只代表 ready：命中改到 send/sendBeacon 真正吞掉遥测时逐次上报，
+  // 运行时兼容调试页因此反映真实遥测流量，而不是"脚本装上了"。
   // 换页或关闭时由宿主逆序 dispose：还原原型与 Beacon，避免旧补丁继续吃掉新页面请求。
   modificationScope?.own?.(() => {
     for (const dispose of disposers.splice(0).reverse()) {

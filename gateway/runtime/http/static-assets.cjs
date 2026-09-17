@@ -997,6 +997,9 @@ function createStaticAssetService({
           runtimeScript(CODEX_REMOTE_FILE_ACTIONS_PATH),
           runtimeScript(CODEX_WORKSPACE_ROOT_PICKER_PATH),
           runtimeScript(CODEX_TOOLTIP_DISMISS_GUARD_PATH),
+          // 聚合启动路径之外的逐文件回退加载同样要带上遥测拦截，否则官方 bundle 含 eager script
+          // 或存在外部插件时该 Provider 根本不加载，修改点会在 locate 阶段被判 unsupported。
+          runtimeScript(CODEX_STATSIG_TELEMETRY_GUARD_PATH),
           runtimeScript(OPENCODEX_MODIFICATION_ACTIVATE_PATH),
         ];
     // manifest 在 Cloudflare Access 等前置认证后面也必须带同源凭据，否则 Chrome 可能拿不到受保护的 manifest。
