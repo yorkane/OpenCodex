@@ -470,7 +470,7 @@ test("authenticated Browser reports merge external Plugin SDK points into diagno
 
   assert.equal(response.status, 200);
   const snapshot = service.snapshot();
-  assert.equal(snapshot.points.length, 104);
+  assert.equal(snapshot.points.length, 105);
   assert.deepEqual(
     snapshot.points.find((point) => point.id === fixture.point.id).plugin,
     fixture.catalog.plugin,

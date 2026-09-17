@@ -67,7 +67,7 @@ test("typed modification catalog assigns every point to a group and adapter chai
       "mobile-interaction": 5,
       "renderer-ui": 6,
       "browser-platform": 3,
-      "web-network": 3,
+      "web-network": 4,
       "gateway-runtime": 9,
       "gateway-ipc": 4,
       "official-main": 3,
