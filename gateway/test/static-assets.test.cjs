@@ -485,7 +485,7 @@ test("web shell entry and PWA manifest carry the configured brand name", (t) => 
     const html = createService(webviewDir).createRendererResponse();
     const deferAttribute = deferred ? " defer" : "";
     const configScript = `<script${deferAttribute} src="/codex-web-config.js"></script>`;
-    const bootstrapScript = `<script${deferAttribute} src="${OPENCODEX_RUNTIME_BOOTSTRAP_PATH}"></script>`;
+    const bootstrapScript = '<script' + deferAttribute + ' src="' + OPENCODEX_RUNTIME_BOOTSTRAP_PATH + '?fp=';
 
     assert.equal(html.includes(configScript), true, name);
     assert.equal(html.includes(bootstrapScript), true, name);
@@ -504,7 +504,7 @@ test("runtime bootstrap honors an explicit gzip rejection", (t) => {
 
   assert.equal(identity.status, 200);
   assert.equal(identity.headers["content-encoding"], undefined);
-  assert.match(identity.headers.etag, /^W\//);
+  assert.match(identity.headers.etag, new RegExp("^\"[A-Za-z0-9_-]{10}\"$"));
   assert.equal(identity.body.toString("utf-8"), runtimeBootstrapSource(service));
   assert.equal(compressed.headers["content-encoding"], "gzip");
   assert.ok(compressed.body.length < identity.body.length);
@@ -1010,7 +1010,7 @@ test("patched official renderer removes eager font preloads but preserves other 
 
   assert.doesNotMatch(html, /<link[^>]+as="font"/);
   assert.ok(
-    html.includes(`<link rel="preload" href="${PATCHED_OFFICIAL_PREFIX}assets/app.js" as="script">`)
+    html.includes(`<link rel="preload" href="${PATCHED_OFFICIAL_PREFIX}assets/app.js?fp=`)
   );
 });
 
@@ -1148,12 +1148,12 @@ test("pre-renders escaped recent threads and preloads official startup modules",
   assert.match(
     html,
     new RegExp(
-      `link rel="preload" as="style" crossorigin href="${PATCHED_OFFICIAL_PREFIX}assets/app-initial-test\\.css"`
+      `link rel="preload" as="style" crossorigin href="${PATCHED_OFFICIAL_PREFIX}assets/app-initial-test\\.css\\?fp=[A-Za-z0-9_-]{10}"`
     )
   );
   assert.match(
     html,
-    new RegExp(`meta name="opencodex-late-modulepreload" content="${PATCHED_OFFICIAL_PREFIX}assets/zh-CN-Locale01\\.js"`)
+    new RegExp(`meta name="opencodex-late-modulepreload" content="${PATCHED_OFFICIAL_PREFIX}assets/zh-CN-Locale01\\.js\\?fp=[A-Za-z0-9_-]{10}"`)
   );
   assert.match(html, new RegExp(`${PATCHED_OFFICIAL_PREFIX}assets/thread-app-shell-chrome-Wrapper01\\.js`));
   assert.doesNotMatch(html, /thread-app-shell-chrome-Implementation01\.js/);
@@ -1963,4 +1963,160 @@ test("official app-menu icons resolve from the site-root /apps/ prefix", (t) => 
   assert.equal(service.staticFile("/apps/sub/icon.png"), null);
   assert.equal(service.staticFile("/apps/missing.png"), null);
   assert.equal(service.staticFile("/apps/icon.txt"), null);
+});
+// ===== 固定运行时脚本的 ?fp= 指纹长缓存 =====
+function servePatchedWithFp(service, reqPath, host, fp) {
+  const file = service.staticFile(reqPath);
+  const res = makeResponseRecorder();
+  // 生产路径里 server.cjs 传 pathname（无 query）与真实 req（url 含 query），这里保持同一形态。
+  const url = fp ? reqPath + '?fp=' + fp : reqPath;
+  service.serveFile({ headers: { host }, url }, res, file, 200, reqPath);
+  return res;
+}
+
+test("renderer HTML references bootstrap with content fingerprint", (t) => {
+  const webviewDir = makeOfficialWebviewDir(t);
+  const service = createService(webviewDir);
+  const html = service.createRendererResponse();
+  const token = service.currentBootstrapFingerprintToken();
+  assert.match(token, /^[A-Za-z0-9_-]{10}$/);
+  // preload 与 script 两处引用必须带同一个指纹位，浏览器按 URL 做 immutable 缓存。
+  assert.equal(html.split(OPENCODEX_RUNTIME_BOOTSTRAP_PATH + "?fp=" + token + "\">").length - 1, 2);
+  assert.match(html, new RegExp('rel="preload" as="script" href="/opencodex-runtime-bootstrap.js\\?fp=' + token));
+});
+
+test("bootstrap with matching fp is immutable with strong etag and cookie stripped", (t) => {
+  const service = createService(makeOfficialWebviewDir(t));
+  const token = service.currentBootstrapFingerprintToken();
+  const res = makeResponseRecorder();
+  // auth gate 预写的 cookie 刷新必须被剥离，公共长缓存才能被浏览器复用。
+  res.setHeader("set-cookie", "codex_web_session=tok; HttpOnly; Path=/; SameSite=Lax");
+  service.serveRuntimeBootstrap({ headers: {}, url: OPENCODEX_RUNTIME_BOOTSTRAP_PATH + '?fp=' + token }, res);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers["cache-control"], "public, max-age=31536000, immutable");
+  // 强 ETag 直接由指纹派生，跨编码一致，不需要弱前缀。
+  assert.equal(res.headers.etag, '"' + token + '"');
+  assert.equal(res.headers["set-cookie"], undefined);
+});
+
+test("bootstrap without or with stale fp stays private no-cache", (t) => {
+  const service = createService(makeOfficialWebviewDir(t));
+  const noFp = makeResponseRecorder();
+  service.serveRuntimeBootstrap({ headers: {}, url: OPENCODEX_RUNTIME_BOOTSTRAP_PATH }, noFp);
+  assert.equal(noFp.status, 200);
+  assert.equal(noFp.headers["cache-control"], "private, no-cache, must-revalidate");
+  const stale = makeResponseRecorder();
+  // 10 位合法字符但值不对：内容已变而 URL 未变，必须保持校验语义而不是固化旧脚本。
+  service.serveRuntimeBootstrap({ headers: {}, url: OPENCODEX_RUNTIME_BOOTSTRAP_PATH + '?fp=ZZZZZZZZZZ' }, stale);
+  assert.equal(stale.status, 200);
+  assert.equal(stale.headers["cache-control"], "private, no-cache, must-revalidate");
+  const malformed = makeResponseRecorder();
+  // 非法 token 或夹带其他 query 的 fp 一律视为无指纹。
+  service.serveRuntimeBootstrap({ headers: {}, url: OPENCODEX_RUNTIME_BOOTSTRAP_PATH + '?fp=abc&x=1' }, malformed);
+  assert.equal(malformed.headers["cache-control"], "private, no-cache, must-revalidate");
+});
+
+test("patched chunk with matching fp becomes immutable and stale fp stays no-cache", (t) => {
+  const webviewDir = makeOfficialWebviewDir(t);
+  const assetsDir = path.join(webviewDir, "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+  // 远端 locale chunk 会被响应期 patch（下载文案替换），默认走 private no-cache。
+  fs.writeFileSync(
+    path.join(assetsDir, "locale-FpTest01.js"),
+    'export default {"artifactTab.preview.openInFolder":"Open in folder"};'
+  );
+  const service = createStaticAssetService({
+    getI18nSnapshot: () => ({
+      locale: "zh-CN",
+      messages: { "web.remoteFile.downloadFile": "下载文件" },
+    }),
+    getOfficialBundle: () => ({ webviewDir }),
+  });
+  const reqPath = PATCHED_OFFICIAL_PREFIX + "assets/locale-FpTest01.js";
+  const token = service.currentPatchedFingerprintToken();
+  assert.match(token, /^[A-Za-z0-9_-]{10}$/);
+
+  const noFp = servePatchedWithFp(service, reqPath, "192.168.60.218:3737", "");
+  assert.equal(noFp.headers["cache-control"], "private, no-cache, must-revalidate");
+  assert.match(noFp.body.toString("utf-8"), /下载文件/);
+
+  const withFp = servePatchedWithFp(service, reqPath, "192.168.60.218:3737", token);
+  assert.equal(withFp.status, 200);
+  assert.equal(withFp.headers["cache-control"], "public, max-age=31536000, immutable");
+  assert.match(withFp.body.toString("utf-8"), /下载文件/);
+  // 长缓存分支同样要剥离 cookie 刷新。
+  const cookieRes = makeResponseRecorder();
+  cookieRes.setHeader("set-cookie", "codex_web_session=tok; HttpOnly; Path=/; SameSite=Lax");
+  service.serveFile(
+    { headers: { host: "192.168.60.218:3737" }, url: reqPath + '?fp=' + token },
+    cookieRes,
+    service.staticFile(reqPath),
+    200,
+    reqPath
+  );
+  assert.equal(cookieRes.headers["set-cookie"], undefined);
+
+  const stale = servePatchedWithFp(service, reqPath, "192.168.60.218:3737", "ZZZZZZZZZZ");
+  assert.equal(stale.status, 200);
+  assert.equal(stale.headers["cache-control"], "private, no-cache, must-revalidate");
+});
+
+test("html rewrite emits fingerprint on every patched-namespace url", (t) => {
+  const webviewDir = makeTempDir(t);
+  const assetsDir = path.join(webviewDir, "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+  fs.writeFileSync(path.join(assetsDir, "zh-CN-Locale01.js"), "export default {};");
+  fs.writeFileSync(
+    path.join(webviewDir, "index.html"),
+    [
+      '<html><head>',
+      '<script type="module" src="./assets/app-initial-test.js"></script>',
+      '<link rel="modulepreload" href="./assets/late-chunk-test.js">',
+      "<title>Codex</title></head><body></body></html>",
+    ].join("")
+  );
+  const service = createStaticAssetService({
+    getI18nSnapshot: () => ({ locale: "zh-CN", messages: {} }),
+    getOfficialBundle: () => ({ webviewDir }),
+  });
+  const html = service.createRendererResponse();
+  const token = service.currentPatchedFingerprintToken();
+  // 所有指向 patched 命名空间的 URL（script/preload 改写与 late-modulepreload meta）必须同一指纹。
+  const parts = html.split(PATCHED_OFFICIAL_PREFIX + "assets/").slice(1);
+  assert.ok(parts.length >= 3, "expected multiple patched urls, got " + parts.length);
+  for (const part of parts) {
+    assert.match(part.slice(0, 80), new RegExp("^[A-Za-z0-9._-]+\\?fp=" + token), "patched url missing fingerprint: " + part);
+  }
+});
+
+test("patched fingerprint changes when patch-affecting locale message changes", (t) => {
+  const webviewDir = makeOfficialWebviewDir(t);
+  const makeService = (message) =>
+    createStaticAssetService({
+      getI18nSnapshot: () => ({
+        locale: "en-US",
+        messages: { "web.remoteFile.downloadFile": message },
+      }),
+      getOfficialBundle: () => ({ webviewDir }),
+    });
+  const before = makeService("Download file");
+  // 下载文案参与响应期 patch，变化后旧 fp 的 immutable 缓存必须自然失效。
+  const after = makeService("Download the file");
+  assert.notEqual(before.currentPatchedFingerprintToken(), after.currentPatchedFingerprintToken());
+});
+
+test("CODEX_WEB_DISABLE_ASSET_CACHE still wins over fingerprint immutable", (t) => {
+  const service = createService(makeOfficialWebviewDir(t));
+  const previous = process.env.CODEX_WEB_DISABLE_ASSET_CACHE;
+  process.env.CODEX_WEB_DISABLE_ASSET_CACHE = "1";
+  try {
+    const token = service.currentBootstrapFingerprintToken();
+    const res = makeResponseRecorder();
+    service.serveRuntimeBootstrap({ headers: {}, url: OPENCODEX_RUNTIME_BOOTSTRAP_PATH + '?fp=' + token }, res);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers["cache-control"], "no-store");
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_WEB_DISABLE_ASSET_CACHE;
+    else process.env.CODEX_WEB_DISABLE_ASSET_CACHE = previous;
+  }
 });

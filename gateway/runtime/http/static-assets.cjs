@@ -21,7 +21,7 @@ const {
   withPluginI18nMessages,
 } = require("../core/plugin-assets.cjs");
 const { gzipIfUseful, send } = require("./http-utils.cjs");
-const { OPENCODEX_VERSION_LABEL } = require("../../../shared/app-version.cjs");
+const { OPENCODEX_VERSION, OPENCODEX_VERSION_LABEL } = require("../../../shared/app-version.cjs");
 const { runtimeCompatibilityMessagesForLocale } = require("../../../shared/i18n/index.cjs");
 const { createHostModificationRuntime } = require("../modification/production-runtime.cjs");
 
@@ -90,6 +90,26 @@ const WEB_SHELL_ASSETS_DIR = path.join(WEB_SHELL_DIR, "assets");
  * 浏览器按当前页面 URL 解析它，因此站点根得到 /apps/，深链路由得到 /<route>/apps/。
  */
 const OFFICIAL_APP_ICON_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|svg|webp|avif|ico|jpe?g|gif)$/i;
+
+// 指纹是内容 sha256 的 base64url 前缀，字符集只含 [A-Za-z0-9_-]，可直接拼进 URL query。
+const FINGERPRINT_LENGTH = 10;
+function shortFingerprint(value) {
+  return crypto.createHash("sha256").update(String(value)).digest("base64url").slice(0, FINGERPRINT_LENGTH);
+}
+// 只接受合法指纹 token；被篡改或夹带其他 query 的 fp 一律按“无指纹”处理，回退校验缓存分支。
+const FINGERPRINT_VALUE_RE = new RegExp("^[A-Za-z0-9_-]{" + FINGERPRINT_LENGTH + "}$");
+/** 从请求 URL 提取 ?fp= 参数；缺失或非法时返回空串，缓存策略保持原有校验行为。 */
+function fingerprintFromRequest(req) {
+  const rawUrl = String(req ? req.url : "");
+  const queryStart = rawUrl.indexOf("?");
+  if (queryStart < 0) return "";
+  try {
+    const value = new URLSearchParams(rawUrl.slice(queryStart + 1)).get("fp") || "";
+    return FINGERPRINT_VALUE_RE.test(value) ? value : "";
+  } catch {
+    return "";
+  }
+}
 const OPENCODEX_MODIFICATION_RUNTIME_FILE = path.join(
   __dirname,
   "..",
@@ -784,13 +804,73 @@ function createStaticAssetService({
     const source = Buffer.from(createRuntimeBootstrapScript(entries, groups), "utf-8");
     // 文件身份未变化时复用正文、散列和压缩体，避免每次刷新都重读整套浏览器运行时。
     runtimeBootstrapCache = {
-      // gzip 与 identity 字节不同但语义相同，用弱校验器配合 Vary，避免跨编码误用强 ETag。
-      etag: `W/"${crypto.createHash("sha256").update(source).digest("base64url")}"`,
+      // 强 ETag 基于身份指纹（正文、插件列表与文件 stat 的确定性函数），
+      // 跨编码一致，命中 ?fp= 分支时浏览器无需关心 Content-Encoding。
+      etag: `"${shortFingerprint(fingerprint)}"`,
       fingerprint,
+      fingerprintToken: shortFingerprint(fingerprint),
       representations: new Map([["identity", source]]),
       source,
     };
     return runtimeBootstrapCache;
+  }
+
+  /** 固定启动脚本的 URL 指纹：随文件集身份或插件列表变化而变化。 */
+  function runtimeBootstrapFingerprintToken() {
+    const entries = listPluginEntries();
+    return shortFingerprint(runtimeBootstrapFingerprint(entries, runtimeBootstrapFileGroups(entries)));
+  }
+
+  /** 对外暴露当前 bootstrap 指纹 token，供 HTML 注入与缓存策略校验共用同一来源。 */
+  function currentBootstrapFingerprintToken() {
+    return runtimeBootstrapFingerprintToken();
+  }
+
+  // 响应期 patch 的输入维度：官方 bundle 身份、网关版本与补丁修订、改写代码本身，
+  // 以及真正影响改写字节的内容——远端下载文案来自 locale 消息表，品牌名来自站点配置。
+  // locale 标签本身不参与：同文案下不同语言标签的输出字节相同，避免无谓指纹翻转。
+  function patchedAssetFingerprintToken() {
+    const bundle = getOfficialBundle();
+    const webviewDir = String(bundle ? bundle.webviewDir : "");
+    const stat = webviewDir ? fs.statSync(webviewDir).mtimeMs : 0;
+    const message =
+      currentHostI18n().messages?.[OPENCODEX_DOWNLOAD_FILE_MESSAGE_ID] || "Download file";
+    const payload = JSON.stringify([
+      PATCHED_ASSET_PATCH_REVISION,
+      OPENCODEX_VERSION,
+      bundle ? String(bundle.version || "unknown") : "unknown",
+      bundle ? String(bundle.build || "unknown") : "unknown",
+      webviewDir,
+      stat,
+      getSiteConfig().brand.name,
+      message,
+      shortFingerprint(fs.readFileSync(__filename)),
+      shortFingerprint(fs.readFileSync(path.join(__dirname, "..", "core", "config.cjs"))),
+    ]);
+    return shortFingerprint(payload);
+  }
+
+  // 指纹带 5 秒 TTL：配置变更通常伴随进程重启，短 TTL 只用于覆盖“运行中改配置”的边界场景，
+  // 同时保证 HTML 与后续 chunk 请求在毫秒级窗口内拿到同一指纹。
+  let patchedFingerprintCache = { token: "", untilMs: 0 };
+  function currentPatchedFingerprintToken() {
+    const nowMs = Date.now();
+    if (nowMs < patchedFingerprintCache.untilMs) return patchedFingerprintCache.token;
+    let token = "";
+    try {
+      token = patchedAssetFingerprintToken();
+    } catch {
+      // bundle 尚未就位或读取失败时不给 URL 带指纹，所有请求走原校验缓存分支。
+    }
+    patchedFingerprintCache = { token, untilMs: nowMs + 5000 };
+    return token;
+  }
+
+  // 给 HTML 里指向 patched 命名空间的资源引用追加 ?fp=，让浏览器按内容指纹长缓存。
+  function withPatchedFingerprint(href) {
+    const token = currentPatchedFingerprintToken();
+    if (!token) return href;
+    return href.includes("?") ? href + "&fp=" + token : href + "?fp=" + token;
   }
 
   function runtimeBootstrapRepresentation(req, entry) {
@@ -879,7 +959,7 @@ function createStaticAssetService({
     const localeAsset = officialAssetFileNames().find(
       (fileName) => fileName.startsWith(`${normalizedLocale}-`) && fileName.endsWith(".js")
     );
-    return localeAsset ? `${PATCHED_OFFICIAL_PREFIX}assets/${localeAsset}` : "";
+    return localeAsset ? withPatchedFingerprint(`${PATCHED_OFFICIAL_PREFIX}assets/${localeAsset}`) : "";
   }
 
   function lateStartupModuleHrefs(locale) {
@@ -917,7 +997,7 @@ function createStaticAssetService({
           officialAssetFileNamesCache.lateStartupModuleFileNames = selectedFileNames;
         }
       }
-      hrefs.push(...selectedFileNames.map((fileName) => `${PATCHED_OFFICIAL_PREFIX}assets/${fileName}`));
+      hrefs.push(...selectedFileNames.map((fileName) => withPatchedFingerprint(`${PATCHED_OFFICIAL_PREFIX}assets/${fileName}`)));
     }
     return Array.from(new Set(hrefs.filter(Boolean)));
   }
@@ -995,15 +1075,17 @@ function createStaticAssetService({
     if (startupPreloads) hitCompatibilityPoint(staticPoints.startupPreload);
     if (previewMarkup) hitCompatibilityPoint(staticPoints.sidebarPreview);
     const useRuntimeBundle = canBundleRuntimeBootstrap();
+    // 固定 bootstrap 脚本的 URL 追加内容指纹：边缘网关剥 ETag，协商缓存不可依赖，?fp= 是唯一失效位。
+    const bootstrapHref = OPENCODEX_RUNTIME_BOOTSTRAP_PATH + "?fp=" + runtimeBootstrapFingerprintToken();
     const deferRuntimeScripts = !officialHtmlHasEagerScript(html);
     const runtimeScript = (src) =>
       `<script${deferRuntimeScripts ? " defer" : ""} src="${src}"></script>`;
     const runtimeScripts = useRuntimeBundle
       ? [
           '<link rel="preload" as="script" href="/codex-web-config.js">',
-          `<link rel="preload" as="script" href="${OPENCODEX_RUNTIME_BOOTSTRAP_PATH}">`,
+          `<link rel="preload" as="script" href="${bootstrapHref}">`,
           runtimeScript("/codex-web-config.js"),
-          runtimeScript(OPENCODEX_RUNTIME_BOOTSTRAP_PATH),
+          runtimeScript(bootstrapHref),
         ]
       : [
           runtimeScript("/codex-web-config.js"),
@@ -1076,7 +1158,7 @@ function createStaticAssetService({
     // JS 的相对导入会把 CSS 也落到 patched 命名空间；HTML 同步改写 CSS，避免同一文件下载两次。
     return rawHtml.replace(
       /((?:src|href)=["']\/official\/assets\/[^"'?#]+\.(?:js|css))(["'])/g,
-      (_match, prefix, quote) => `${prefix.replace("/official/assets/", `${PATCHED_OFFICIAL_PREFIX}assets/`)}${quote}`
+      (_match, prefix, quote) => `${withPatchedFingerprint(prefix.replace("/official/assets/", `${PATCHED_OFFICIAL_PREFIX}assets/`))}${quote}`
     );
   }
 
@@ -1662,10 +1744,26 @@ ${pluginGatewayStateBootstrapScript()}
   }
 
   /** 静态资源缓存策略：hash asset 长缓存，入口 HTML/no-store 保持可更新。 */
-  function cacheControlForRequestPath(reqPath, responsePatched = false) {
+  function cacheControlForRequestPath(reqPath, responsePatched = false, options = {}) {
     if (process.env.CODEX_WEB_DISABLE_ASSET_CACHE === "1") return "no-store";
+    // 路由层按 pathname 分发，这里兼容直接带 query 的测试调用。
+    const cleanPath = reqPath.split("?")[0];
+    const fingerprint = String(options.fingerprint || "");
+    // 固定运行时脚本：请求携带的 ?fp= 与当前指纹一致时，内容位已随 URL 版本化，
+    // 可以安全交给浏览器 immutable 长缓存；边缘剥 ETag 也不影响正确性。
+    if (cleanPath === OPENCODEX_RUNTIME_BOOTSTRAP_PATH) {
+      if (fingerprint && fingerprint === runtimeBootstrapFingerprintToken()) {
+        return "public, max-age=31536000, immutable";
+      }
+      // 不带 fp 或 fp 过期（脚本内容已变化但 URL 没变）时保持校验语义，避免固化旧脚本。
+      return "private, no-cache, must-revalidate";
+    }
     if (patchedOfficialAssetName(reqPath)) {
       if (responsePatched) {
+        // fp 命中时同样升级为长缓存：patch 输入维度全部进入指纹，URL 变则内容必变。
+        if (fingerprint && fingerprint === currentPatchedFingerprintToken()) {
+          return "public, max-age=31536000, immutable";
+        }
         // 动态 patch 仍要求每次校验，但允许浏览器保存响应并通过 ETag 复用，避免旧版本长期驻留。
         return "private, no-cache, must-revalidate";
       }
@@ -1710,7 +1808,9 @@ ${pluginGatewayStateBootstrapScript()}
     if (shouldPatchOfficialAsset(reqPath) && process.env.CODEX_WEB_DISABLE_ASSET_CACHE !== "1") {
       const sendEntry = (entry) => {
         const contentType = mimeType(file);
-        const cacheControl = cacheControlForRequestPath(reqPath, entry.patched);
+        const cacheControl = cacheControlForRequestPath(reqPath, entry.patched, {
+          fingerprint: fingerprintFromRequest(req),
+        });
         dropCookieRefreshIfCacheable(cacheControl);
         const encoding = representationEncoding(req, contentType, entry.data);
         const sendRepresentation = (representation) => {
@@ -1838,12 +1938,17 @@ ${pluginGatewayStateBootstrapScript()}
 
   function serveRuntimeBootstrap(req, res, headers = {}) {
     const entry = runtimeBootstrapEntry();
+    // ?fp= 与当前指纹一致时升级为 immutable 长缓存，并按公共缓存语义剥离 cookie 刷新。
+    const cacheControl = cacheControlForRequestPath(OPENCODEX_RUNTIME_BOOTSTRAP_PATH, false, {
+      fingerprint: fingerprintFromRequest(req),
+    });
+    if (cacheControl.startsWith("public")) res.removeHeader("set-cookie");
     if (requestHasMatchingEtag(req, entry.etag)) {
       return send(
         res,
         304,
         {
-          "cache-control": "private, no-cache, must-revalidate",
+          "cache-control": cacheControl,
           etag: entry.etag,
           vary: "Accept-Encoding",
           ...headers,
@@ -1857,7 +1962,7 @@ ${pluginGatewayStateBootstrapScript()}
       200,
       {
         "content-type": "application/javascript; charset=utf-8",
-        "cache-control": "private, no-cache, must-revalidate",
+        "cache-control": cacheControl,
         etag: entry.etag,
         vary: "Accept-Encoding",
         ...(representation.encoding !== "identity" ? { "content-encoding": representation.encoding } : {}),
@@ -1901,13 +2006,23 @@ ${pluginGatewayStateBootstrapScript()}
     );
   }
 
+  /** 清掉指纹与 bootstrap 缓存：配置或文件集变化后，下一次请求必须重新计算指纹。 */
+  function resetAssetFingerprintCaches() {
+    patchedFingerprintCache = { token: "", untilMs: 0 };
+    runtimeBootstrapCache = null;
+  }
+
   return {
     assetCacheDiagnostics,
+    // 指纹与缓存重置入口：供 HTML 注入断言与配置变更失效测试使用，生产路径不经由它取响应。
+    currentBootstrapFingerprintToken,
+    currentPatchedFingerprintToken,
     createRendererResponse,
     isAppShellRoute,
     isPublicStaticPath,
     patchOfficialAssetData: patchOfficialAsset,
     prewarmRendererAssets,
+    resetAssetFingerprintCaches,
     serveFile,
     servePluginLoader,
     serveRendererIndex,
