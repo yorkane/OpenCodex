@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenCodex bundled payload installer
+Documentation=file:///opt/opencodex/deploy.md
+# 只在随包带了离线 payload 且尚未安装过的时候才有事可做。
+ConditionPathExists=/opt/opencodex/payload
+ConditionPathExists=!/var/lib/opencodex/.payload-installed
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/opencodex/install-payload.sh
+# payload 可能很大（官方 code-app 约 400MB），给足时间。
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=multi-user.target

@@ -11,6 +11,8 @@ dist/
 release/
 # deb 打包的暂存目录（由 packaging/linux/build-deb.sh 生成）
 build/
+# 离线 payload：随包安装的第三方 .deb（node 运行时、官方 code-app 等），体积大，不入库
+packaging/linux/payload/
 
 # Local runtime data
 .data/
@@ -48,6 +50,8 @@ Thumbs.db
 .env.local
 .env.*.local
 config.yaml
+# 上面的 config.yaml 针对运行时配置；打包用的站点配置模板必须入库。
+!packaging/linux/etc/config.yaml
 
 # Temporary files
 # 浏览器验证工具的会话产物（playwright-cli 生成）

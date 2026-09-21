@@ -36,6 +36,7 @@ usage() {
   open       用默认浏览器打开访问地址
   config     编辑站点配置 /etc/opencodex/config.yaml
   env        编辑环境配置 /etc/opencodex/gateway.env
+  install-payload  安装随包携带的离线 payload（node / 官方 code-app 等）
   version    打印已安装版本
 USAGE
 }
@@ -88,6 +89,11 @@ case "$command" in
     ;;
   env)
     exec "${EDITOR:-vi}" /etc/opencodex/gateway.env
+    ;;
+  install-payload)
+    # dpkg 锁在服务安装期间被占用，这里交给一次性单元执行。
+    systemctl start opencodex-payload.service
+    systemctl status --no-pager --lines=0 opencodex-payload.service || true
     ;;
   version)
     cat "$APP_DIR/VERSION" 2>/dev/null || echo unknown

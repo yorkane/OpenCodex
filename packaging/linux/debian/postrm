@@ -7,10 +7,11 @@ LOG_DIR=/var/log/opencodex
 
 case "$1" in
   remove)
-    systemctl disable opencodex-gateway.service opencodex-xvfb.service >/dev/null 2>&1 || true
+    systemctl disable opencodex-gateway.service opencodex-xvfb.service opencodex-payload.service >/dev/null 2>&1 || true
     ;;
   purge)
     systemctl disable opencodex-gateway.service opencodex-xvfb.service >/dev/null 2>&1 || true
+    rm -f /var/lib/opencodex/.payload-installed
     rm -rf "$STATE_DIR" "$LOG_DIR"
     if getent passwd opencodex >/dev/null 2>&1; then
       deluser opencodex >/dev/null 2>&1 || true

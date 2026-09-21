@@ -51,6 +51,32 @@ if ! command -v dpkg-deb >/dev/null 2>&1; then
   exit 1
 fi
 
+# 模板文件缺失时 dpkg-deb 要到最后一步才报错，这里提前逐个确认，报错更直观。
+# （踩过的坑：.gitignore 的 config.yaml 规则会把打包模板一起忽略，导致 CI 上缺文件。）
+REQUIRED_TEMPLATES="packaging/linux/debian/control.in \
+packaging/linux/debian/conffiles \
+packaging/linux/debian/postinst \
+packaging/linux/debian/prerm \
+packaging/linux/debian/postrm \
+packaging/linux/debian/opencodex.desktop \
+packaging/linux/etc/gateway.env \
+packaging/linux/etc/config.yaml \
+packaging/linux/systemd/opencodex-gateway.service \
+packaging/linux/systemd/opencodex-xvfb.service \
+packaging/linux/systemd/opencodex-payload.service \
+packaging/linux/bin/opencodex-gateway \
+packaging/linux/run-gateway.sh \
+packaging/linux/install-payload.sh"
+missing=""
+for template in $REQUIRED_TEMPLATES; do
+  [ -f "$REPO_ROOT/$template" ] || missing="$missing $template"
+done
+if [ -n "$missing" ]; then
+  echo "缺少打包模板文件，请确认它们已入库：$missing" >&2
+  echo "提示：git ls-files --error-unmatch <路径> 可确认是否被 .gitignore 忽略。" >&2
+  exit 1
+fi
+
 # 已装版本必须与 package.json 一致，避免打出内容与版本号不符的包。
 SYNCED_VERSION=$(sed -n 's/^const OPENCODEX_VERSION = "\(.*\)";$/\1/p' "$REPO_ROOT/shared/app-version.cjs")
 if [ "$SYNCED_VERSION" != "$VERSION" ]; then
@@ -93,6 +119,7 @@ copy_tree deploy.md
 
 printf '%s\n' "$VERSION" > "$APP_DIR/VERSION"
 install -m 0755 "$PKG_DIR/run-gateway.sh" "$APP_DIR/run-gateway.sh"
+install -m 0755 "$PKG_DIR/install-payload.sh" "$APP_DIR/install-payload.sh"
 
 # ---- 2. 生产依赖 ----
 # 必须用 pnpm 在生产依赖根里重装一遍：pnpm 把传递依赖放在 .pnpm 下并用符号链接暴露，
@@ -111,10 +138,32 @@ rm -rf "$DEPS_STAGE"
   'for (const dep of (process.env.PROD_DEPS || "").split(" ").filter(Boolean)) { require(dep); }' )
 echo "   生产依赖: $(find "$APP_DIR/node_modules" -type f | wc -l) 个文件"
 
+# ---- 2b. 离线 payload（可选）----
+# 目标机没有外网时，把需要一并安装的 .deb 放进 packaging/linux/payload/，
+# 构建时会被打进包里，由 postinst 在安装阶段用 dpkg 装上（节点运行时、官方 code-app 等）。
+PAYLOAD_DIR="$PKG_DIR/payload"
+BUNDLED_PAYLOAD=0
+if [ -d "$PAYLOAD_DIR" ]; then
+  shopt -s nullglob
+  payload_debs=("$PAYLOAD_DIR"/*.deb)
+  shopt -u nullglob
+  if [ ${#payload_debs[@]} -gt 0 ]; then
+    mkdir -p "$APP_DIR/payload"
+    cp -a "${payload_debs[@]}" "$APP_DIR/payload/"
+    BUNDLED_PAYLOAD=${#payload_debs[@]}
+  fi
+fi
+if [ "$BUNDLED_PAYLOAD" -gt 0 ]; then
+  echo "   离线 payload: $BUNDLED_PAYLOAD 个 .deb，合计 $(du -sh "$APP_DIR/payload" | cut -f1)"
+else
+  echo "   离线 payload: 无（依赖由 Depends 声明，安装时需要能访问 apt 源）"
+fi
+
 # ---- 3. 启动器 / 服务 / 配置 / 图标 ----
 install -m 0755 "$PKG_DIR/bin/opencodex-gateway" "$STAGE/usr/bin/opencodex-gateway"
 install -m 0644 "$PKG_DIR/systemd/opencodex-gateway.service" "$STAGE/lib/systemd/system/opencodex-gateway.service"
 install -m 0644 "$PKG_DIR/systemd/opencodex-xvfb.service" "$STAGE/lib/systemd/system/opencodex-xvfb.service"
+install -m 0644 "$PKG_DIR/systemd/opencodex-payload.service" "$STAGE/lib/systemd/system/opencodex-payload.service"
 install -m 0644 "$PKG_DIR/etc/gateway.env" "$STAGE/etc/opencodex/gateway.env"
 install -m 0644 "$PKG_DIR/etc/config.yaml" "$STAGE/etc/opencodex/config.yaml"
 install -m 0644 "$PKG_DIR/debian/opencodex.desktop" "$STAGE/usr/share/applications/opencodex.desktop"

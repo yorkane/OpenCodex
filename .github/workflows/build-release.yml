@@ -1,4 +1,4 @@
-name: Build installers and draft release
+name: Build deb and draft release
 
 on:
   push:
@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       is_release: ${{ steps.version.outputs.is_release }}
+      is_tag: ${{ steps.version.outputs.is_tag }}
       version: ${{ steps.version.outputs.version }}
       should_build_artifacts: ${{ steps.changes.outputs.should_build_artifacts }}
     steps:
@@ -31,6 +32,16 @@ jobs:
           # 仅匹配 HEAD commit 的标题，避免普通提交误触发发布流程。
           commit_subject="${COMMIT_MESSAGE%%$'\n'*}"
           commit_subject="${commit_subject%$'\r'}"
+
+          # 发布 Release 会推送 tag，tag push 也会命中 on: push；
+          # 它指向刚构建过的同一个提交，重跑只会重复构建，因此标记为 tag 直接跳过。
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "is_tag=true" >> "$GITHUB_OUTPUT"
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "is_tag=false" >> "$GITHUB_OUTPUT"
 
           if [[ "$commit_subject" =~ ^chore:\ bump\ version\ to\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
             version="${BASH_REMATCH[1]}"
@@ -56,14 +67,21 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           AFTER_SHA: ${{ github.sha }}
           IS_RELEASE: ${{ steps.version.outputs.is_release }}
+          IS_TAG: ${{ steps.version.outputs.is_tag }}
         run: |
+          # tag push 不产出任何东西，直接跳过，避免同一提交被构建两次。
+          if [[ "$IS_TAG" == "true" ]]; then
+            echo "should_build_artifacts=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # 发布提交必须继续构建安装包，保证 release 任务始终有完整产物可用。
           if [[ "$IS_RELEASE" == "true" ]]; then
             echo "should_build_artifacts=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # 新分支没有可比较的 before 提交时保守地执行构建，避免遗漏非文档变更。
+          # 新分支或新 tag 没有可比较的 before 提交时保守地执行构建。
           if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
             echo "should_build_artifacts=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -89,19 +107,12 @@ jobs:
 
           echo "should_build_artifacts=$should_build_artifacts" >> "$GITHUB_OUTPUT"
 
-  build-macos:
-    name: Build macOS installer (${{ matrix.arch }})
+  build-deb:
+    name: Build Debian package
     needs: metadata
+    # 目标机是 Debian/Ubuntu 22.04，用同版本 runner 构建，保证 dpkg 与 glibc 对齐。
+    runs-on: ubuntu-22.04
     if: needs.metadata.outputs.is_release == 'true' || needs.metadata.outputs.should_build_artifacts == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-15
-          - arch: x64
-            runner: macos-15-intel
-    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -121,71 +132,55 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build ad-hoc signed DMG installers
+      - name: Build the deb
         run: |
+          # 包只从 gateway/dist 取运行时，因此必须先把构建产物做出来。
           pnpm run build
-          # 安装包由后续 job 统一发布，禁止 electron-builder 在 CI 中自动上传。
-          pnpm exec electron-builder --mac dmg --${{ matrix.arch }} --config.mac.identity=- --publish never
+          bash packaging/linux/build-deb.sh
 
-      - name: Verify macOS signatures
+      - name: Verify the deb
         shell: bash
         run: |
-          # 每个矩阵任务只应生成当前架构的一个顶层应用包。
-          app_count=0
-          while IFS= read -r -d '' app_path; do
-            codesign --verify --deep --strict --verbose=2 "$app_path"
-            ((app_count += 1))
-          done < <(find release -mindepth 2 -maxdepth 2 -type d -name '*.app' -print0)
-
-          if (( app_count != 1 )); then
-            echo "Unexpected application bundles: $app_count" >&2
+          shopt -s nullglob
+          deb_files=(release/*.deb)
+          if (( ${#deb_files[@]} != 1 )); then
+            echo "Expected exactly one deb, found ${#deb_files[@]}" >&2
             exit 1
           fi
 
-      - name: Upload macOS artifacts
+          deb="${deb_files[0]}"
+          echo "Package: $deb"
+          dpkg-deb -f "$deb" Package Version Architecture Depends
+
+          # 解包后确认关键路径都在：启动器、两个 systemd 单元、构建产物。
+          version="$(dpkg-deb -f "$deb" Version)"
+          tmp="$(mktemp -d)"
+          dpkg-deb -x "$deb" "$tmp"
+          for required in \
+            "usr/bin/opencodex-gateway" \
+            "lib/systemd/system/opencodex-gateway.service" \
+            "lib/systemd/system/opencodex-xvfb.service" \
+            "etc/opencodex/gateway.env" \
+            "etc/opencodex/config.yaml" \
+            "opt/opencodex/gateway/dist/modification/catalog.js" \
+            "opt/opencodex/run-gateway.sh"; do
+            if [[ ! -e "$tmp/$required" ]]; then
+              echo "Missing from package: $required" >&2
+              exit 1
+            fi
+          done
+          if [[ "$(cat "$tmp/opt/opencodex/VERSION")" != "$version" ]]; then
+            echo "Bundled VERSION does not match package version" >&2
+            exit 1
+          fi
+          echo "deb layout verified for $version"
+
+      - name: Upload deb artifact
         uses: actions/upload-artifact@v6
         with:
-          # 外层 Artifact 名称携带完整提交哈希，内部 DMG 文件名保持不变。
-          name: opencodex-macos-${{ matrix.arch }}-${{ github.sha }}
-          path: release/*.dmg
-          if-no-files-found: error
-
-  build-windows:
-    name: Build Windows installer
-    needs: metadata
-    if: needs.metadata.outputs.is_release == 'true' || needs.metadata.outputs.should_build_artifacts == 'true'
-    runs-on: windows-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.2
-          run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build NSIS installer
-        run: |
-          pnpm run build
-          # 安装包由后续 job 统一发布，禁止 electron-builder 在 CI 中自动上传。
-          pnpm exec electron-builder --win nsis --x64 --publish never
-
-      - name: Upload Windows artifact
-        uses: actions/upload-artifact@v6
-        with:
-          # 外层 Artifact 名称携带完整提交哈希，内部 EXE 文件名保持不变。
-          name: opencodex-windows-${{ github.sha }}
-          path: release/*.exe
+          # 外层 Artifact 名称携带完整提交哈希，内部 deb 文件名保持不变。
+          name: opencodex-deb-${{ github.sha }}
+          path: release/*.deb
           if-no-files-found: error
 
   release:
@@ -193,8 +188,7 @@ jobs:
     if: needs.metadata.outputs.is_release == 'true'
     needs:
       - metadata
-      - build-macos
-      - build-windows
+      - build-deb
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -204,7 +198,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
     steps:
-      - name: Download installers
+      - name: Download the deb
         uses: actions/download-artifact@v8
         with:
           path: release-assets
@@ -214,12 +208,11 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          dmg_files=(release-assets/*.dmg)
-          exe_files=(release-assets/*.exe)
+          deb_files=(release-assets/*.deb)
 
-          # 当前配置应产出 Intel/Apple Silicon 两个 DMG 和一个 Windows 安装包。
-          if (( ${#dmg_files[@]} != 2 || ${#exe_files[@]} != 1 )); then
-            echo "Unexpected assets: ${#dmg_files[@]} DMG, ${#exe_files[@]} EXE" >&2
+          # 本分支只产出 Debian 包：macOS/Windows 安装包已移除。
+          if (( ${#deb_files[@]} != 1 )); then
+            echo "Unexpected assets: ${#deb_files[@]} deb" >&2
             exit 1
           fi
 
@@ -227,7 +220,7 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          assets=(release-assets/*.dmg release-assets/*.exe)
+          assets=(release-assets/*.deb)
 
           if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
             # 重跑流水线时仅更新已有草稿，避免覆盖已经正式发布的 Release。

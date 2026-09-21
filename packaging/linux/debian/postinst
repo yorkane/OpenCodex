@@ -43,6 +43,8 @@ case "$1" in
     reload_systemd
     systemctl enable opencodex-xvfb.service >/dev/null 2>&1 || true
     systemctl enable opencodex-gateway.service >/dev/null 2>&1 || true
+    # 随包离线 payload 由一次性单元在安装结束、dpkg 锁释放之后安装。
+    systemctl enable opencodex-payload.service >/dev/null 2>&1 || true
     if [ -n "$2" ]; then
       # 升级：只在服务本来就在运行时重启，避免把管理员手动停掉的服务拉起来。
       systemctl try-restart opencodex-gateway.service >/dev/null 2>&1 || true
