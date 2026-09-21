@@ -3428,6 +3428,13 @@
     };
   }
 
+  // 把完整 payload 构造器挂到命名空间全局：网络策略拦截层（codex-network-guard.js）按装配
+  // 顺序装在本补丁之外，若它先把 ab.chatgpt.com/v1/initialize 吃成裸 "{}"，Statsig SDK
+  // 会因解析失败刷 "[Statsig] Failed to parse Response"。拦截层命中该端点时会改走这个
+  // 钩子（或透传回本层的 fetch 包装），让 SDK 始终拿到形状合法的 initialize 响应。
+  // 这里只做一行暴露，不改动 buildStatsigInitializeResponse 的函数本体。
+  w.__OpenCodexStatsigInitializeFallback = buildStatsigInitializeResponse;
+
   function isStatsigInitializeUrl(url) {
     try {
       const parsed = new URL(url, location.href);

@@ -38,6 +38,41 @@
 
   const MOCK_RESPONSE_BODY = "{}";
 
+  // Statsig initialize 端点（ab.chatgpt.com/v1/initialize）的匹配：与 codex-bridge-polyfill.js
+  // 里的 isStatsigInitializeUrl 保持同语义（浏览器端不能 require 别的 provider，只能各带一份）。
+  function isStatsigInitializeUrl(raw) {
+    try {
+      const parsed = new URL(String(raw || ""), location.href);
+      return (
+        parsed.hostname === "ab.chatgpt.com" &&
+        parsed.pathname.replace(/\/+$/, "") === "/v1/initialize"
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * initialize 端点的本地兜底响应体。
+   * 为什么不能像其他被拦域名一样回裸 "{}"：Statsig SDK 的 StatsigEvaluationsDataAdapter
+   * 要求 initialize 响应带 has_updates / feature_gates / dynamic_configs / layer_configs
+   * 等字段，"{}" 会让它解析失败并在控制台刷 "[Statsig] Failed to parse Response"。
+   * payload 构造器由 bridge polyfill（更早安装、在内层）挂到
+   * window.__OpenCodexStatsigInitializeFallback；拿不到时退回 "{}" 只是保底，
+   * 正常装配顺序下一定能拿到完整 payload。
+   * 遥测端点（rgstr / log_event）只回 "{}" 即可，因为 SDK 对它们只关心 HTTP 200、
+   * 不解析响应体，形状合法与否不影响行为。
+   */
+  function statsigInitializeBody() {
+    const fallback = w.__OpenCodexStatsigInitializeFallback;
+    if (typeof fallback !== "function") return MOCK_RESPONSE_BODY;
+    try {
+      return JSON.stringify(fallback());
+    } catch {
+      return MOCK_RESPONSE_BODY;
+    }
+  }
+
   /**
    * 域名匹配：与 gateway site-config.hostMatchesPattern 同语义。
    * 通配规则 *.example.com 只匹配子域，不匹配 example.com 本身；其余按精确主机名相等。
@@ -108,6 +143,12 @@
       if (!isBlocked(parsed)) {
         return originalFetch(input, init);
       }
+      // Statsig initialize 特判：透传回内层实现，而不是回裸 "{}"。
+      // 内层（codex-bridge-polyfill 的 fetch 包装）会为该 URL 本地合成完整合法 payload，
+      // 请求并不会真的出网，所以透传不存在信息泄露；而 "{}" 会让 SDK 解析失败刷错。
+      if (isStatsigInitializeUrl(parsed.toString())) {
+        return originalFetch(input, init);
+      }
       // 按骨架约定，安装完成只代表 ready，命中只能在真实拦截发生时上报。
       modificationEffects?.primary?.emit();
       return Promise.resolve(new Response(MOCK_RESPONSE_BODY, {
@@ -143,12 +184,18 @@
       modificationEffects?.primary?.emit();
       // 跳过真实网络请求：loadstart 同步补发，其余状态异步补齐，
       // 因为 SDK 通常在 send 返回之后才注册 load 监听器。
+      // initialize 端点改用完整 payload 作为响应体（SDK 必须能解析出 feature_gates 等
+      // 字段），其余被拦 URL 维持裸 "{}"。
+      const responseBody =
+        isStatsigInitializeUrl(xhr.__opencodexNetworkUrl || "")
+          ? statsigInitializeBody()
+          : MOCK_RESPONSE_BODY;
       safeDispatch(xhr, "loadstart");
       scheduler.setTimeout(() => {
         defineReadOnly(xhr, "status", 200);
         defineReadOnly(xhr, "statusText", "OK");
-        defineReadOnly(xhr, "response", MOCK_RESPONSE_BODY);
-        defineReadOnly(xhr, "responseText", MOCK_RESPONSE_BODY);
+        defineReadOnly(xhr, "response", responseBody);
+        defineReadOnly(xhr, "responseText", responseBody);
         defineReadOnly(xhr, "readyState", 4);
         safeDispatch(xhr, "readystatechange");
         safeDispatch(xhr, "load");
