@@ -50,6 +50,8 @@ Thumbs.db
 config.yaml
 
 # Temporary files
+# 浏览器验证工具的会话产物（playwright-cli 生成）
+.playwright-cli/
 *.tmp
 *.temp
 
