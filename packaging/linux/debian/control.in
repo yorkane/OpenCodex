@@ -1,0 +1,21 @@
+Package: opencodex
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: yorkane <yorkane@users.noreply.github.com>
+Section: net
+Priority: optional
+Depends: nodejs (>= 20), xvfb, adduser, ca-certificates
+Homepage: https://github.com/yorkane/OpenCodex
+Description: OpenCodex gateway and launcher
+ OpenCodex is a middleware layer that exposes a machine's Codex Desktop
+ runtime through a browser, so a phone, tablet or another computer can drive
+ the same Codex session over the LAN or a tunnel.
+ .
+ This package installs the gateway, the web shell and the bundled patches
+ (site branding, outbound host policy, headless Electron flags), registers
+ the Xvfb virtual display and the gateway systemd services, and provides the
+ opencodex launcher for starting, stopping and opening the web UI.
+ .
+ The official Codex Desktop runtime must be installed separately; point
+ CODEX_DESKTOP_APP_PATH / CODEX_DESKTOP_EXECUTABLE_PATH in
+ /etc/opencodex/gateway.env at it.

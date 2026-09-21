@@ -9,6 +9,8 @@ node_modules/
 out/
 dist/
 release/
+# deb 打包的暂存目录（由 packaging/linux/build-deb.sh 生成）
+build/
 
 # Local runtime data
 .data/

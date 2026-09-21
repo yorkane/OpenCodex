@@ -1,0 +1,56 @@
+#!/bin/sh
+# OpenCodex gateway 安装后配置：建服务账户与运行时目录，注册并启动 systemd 服务。
+set -e
+
+APP_DIR=/opt/opencodex
+STATE_DIR=/var/lib/opencodex
+LOG_DIR=/var/log/opencodex
+
+create_service_account() {
+  if ! getent passwd opencodex >/dev/null 2>&1; then
+    adduser --system --group --disabled-password --home "$STATE_DIR" \
+      --no-create-home --gecos "OpenCodex gateway" opencodex >/dev/null
+  fi
+  if ! getent group opencodex >/dev/null 2>&1; then
+    addgroup --system opencodex >/dev/null
+  fi
+}
+
+create_runtime_dirs() {
+  install -d -o opencodex -g opencodex -m 0755 "$STATE_DIR"
+  install -d -o opencodex -g opencodex -m 0755 \
+    "$STATE_DIR/codexhome" \
+    "$STATE_DIR/runtime" \
+    "$STATE_DIR/reports" \
+    "$STATE_DIR/official-bundle" \
+    "$STATE_DIR/official-user-data"
+  # 网关把官方 Electron 子进程日志写到 StandardOutput 指定的文件，目录必须可写。
+  install -d -o opencodex -g opencodex -m 0750 "$LOG_DIR"
+  touch "$LOG_DIR/gateway.log"
+  chown opencodex:opencodex "$LOG_DIR/gateway.log"
+  chmod 0640 "$LOG_DIR/gateway.log"
+}
+
+reload_systemd() {
+  # chroot 或容器里没有运行 systemd 时不能让安装失败。
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+case "$1" in
+  configure)
+    create_service_account
+    create_runtime_dirs
+    reload_systemd
+    systemctl enable opencodex-xvfb.service >/dev/null 2>&1 || true
+    systemctl enable opencodex-gateway.service >/dev/null 2>&1 || true
+    if [ -n "$2" ]; then
+      # 升级：只在服务本来就在运行时重启，避免把管理员手动停掉的服务拉起来。
+      systemctl try-restart opencodex-gateway.service >/dev/null 2>&1 || true
+    else
+      systemctl restart opencodex-xvfb.service >/dev/null 2>&1 || true
+      systemctl restart opencodex-gateway.service >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
+
+exit 0

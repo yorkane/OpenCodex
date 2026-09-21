@@ -1,0 +1,24 @@
+[Unit]
+Description=OpenCodex gateway (Codex Desktop over the browser)
+Documentation=file:///opt/opencodex/deploy.md
+After=network-online.target opencodex-xvfb.service
+Wants=network-online.target
+Requires=opencodex-xvfb.service
+
+[Service]
+Type=simple
+User=opencodex
+Group=opencodex
+WorkingDirectory=/opt/opencodex
+# 站点品牌、出站域名策略、官方运行时路径都在这里配置。
+EnvironmentFile=/etc/opencodex/gateway.env
+ExecStart=/opt/opencodex/run-gateway.sh
+Restart=on-failure
+RestartSec=5
+# 官方 Electron 运行时是 Chromium，浏览器进程会打开较多文件描述符。
+LimitNOFILE=65535
+StandardOutput=append:/var/log/opencodex/gateway.log
+StandardError=append:/var/log/opencodex/gateway.log
+
+[Install]
+WantedBy=multi-user.target

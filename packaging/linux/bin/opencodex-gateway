@@ -1,0 +1,103 @@
+#!/bin/sh
+# OpenCodex 网关启动器：管理 opencodex-gateway.service 并打开 Web 界面。
+# 命令名刻意不叫 opencodex：该名字已被 npm 上的 fork 代理 CLI 占用，
+# 同名时会被 PATH 中更靠前的它遮蔽。
+set -eu
+
+APP_DIR=/opt/opencodex
+ENV_FILE=/etc/opencodex/gateway.env
+GATEWAY_UNIT=opencodex-gateway.service
+XVFB_UNIT=opencodex-xvfb.service
+
+# 从 EnvironmentFile 里读一个键的裸值（去掉首尾引号与空白）。
+env_value() {
+  [ -f "$ENV_FILE" ] || return 1
+  sed -n "s/^[[:space:]]*$1=//p" "$ENV_FILE" | tail -1 | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+gateway_url() {
+  host=$(env_value HOST || true)
+  port=$(env_value PORT || true)
+  printf 'http://%s:%s/' "${host:-127.0.0.1}" "${port:-3737}"
+}
+
+usage() {
+  cat <<'USAGE'
+用法: opencodex-gateway <命令>
+
+  start      启动虚拟显示与网关服务
+  stop       停止网关服务（保留虚拟显示）
+  restart    重启网关服务
+  status     查看服务状态
+  enable     开机自启（enable + 立即启动）
+  disable    取消开机自启并停止
+  logs [n]   查看最近 n 行日志（默认 100）
+  url        打印访问地址
+  open       用默认浏览器打开访问地址
+  config     编辑站点配置 /etc/opencodex/config.yaml
+  env        编辑环境配置 /etc/opencodex/gateway.env
+  version    打印已安装版本
+USAGE
+}
+
+command="${1:-status}"
+shift || true
+
+case "$command" in
+  start)
+    systemctl start "$XVFB_UNIT" "$GATEWAY_UNIT"
+    echo "opencodex started -> $(gateway_url)"
+    ;;
+  stop)
+    systemctl stop "$GATEWAY_UNIT"
+    echo "opencodex gateway stopped"
+    ;;
+  restart)
+    systemctl restart "$GATEWAY_UNIT"
+    echo "opencodex restarted -> $(gateway_url)"
+    ;;
+  status)
+    systemctl --no-pager --lines=0 status "$GATEWAY_UNIT" || true
+    echo "url: $(gateway_url)"
+    ;;
+  enable)
+    systemctl enable --now "$XVFB_UNIT" "$GATEWAY_UNIT"
+    echo "opencodex enabled on boot"
+    ;;
+  disable)
+    systemctl disable --now "$GATEWAY_UNIT" "$XVFB_UNIT"
+    echo "opencodex disabled"
+    ;;
+  logs)
+    journalctl -u "$GATEWAY_UNIT" -n "${1:-100}" --no-pager
+    ;;
+  url)
+    gateway_url
+    echo
+    ;;
+  open)
+    target=$(gateway_url)
+    if command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "$target" >/dev/null 2>&1 || echo "$target"
+    else
+      echo "$target"
+    fi
+    ;;
+  config)
+    exec "${EDITOR:-vi}" /etc/opencodex/config.yaml
+    ;;
+  env)
+    exec "${EDITOR:-vi}" /etc/opencodex/gateway.env
+    ;;
+  version)
+    cat "$APP_DIR/VERSION" 2>/dev/null || echo unknown
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    echo "opencodex-gateway: 未知命令 $command" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

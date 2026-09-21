@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=OpenCodex
+GenericName=Codex Desktop gateway
+Comment=在浏览器中访问本机 Codex Desktop 运行时
+Comment[en]=Access this machine's Codex Desktop runtime from a browser
+Exec=opencodex-gateway open
+Icon=opencodex
+Terminal=false
+Categories=Development;Utility;
+Keywords=codex;opencodex;openai;
+StartupNotify=false
