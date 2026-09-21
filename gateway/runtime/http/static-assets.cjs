@@ -75,6 +75,7 @@ const CODEX_TOOLTIP_DISMISS_GUARD_PATH = "/codex-tooltip-dismiss-guard.js";
 const CODEX_STATSIG_TELEMETRY_GUARD_PATH = "/codex-statsig-telemetry-guard.js";
 const CODEX_NETWORK_GUARD_PATH = "/codex-network-guard.js";
 const CODEX_BRAND_TEXT_PATH = "/codex-brand-text.js";
+const CODEX_MENU_ITEM_GUARD_PATH = "/codex-menu-item-guard.js";
 const FAVICON_PATH = "/favicon.ico";
 const PWA_MANIFEST_PATH = "/manifest.webmanifest";
 const OFFICIAL_LOADING_SHIMMER_POWER_GUARD = [
@@ -126,6 +127,7 @@ const BROWSER_PROVIDER_KEY_BY_FILE = new Map([
   [path.join(INTERNAL_PROVIDER_DIR, "codex-statsig-telemetry-guard.js"), "statsig-telemetry-guard"],
   [path.join(INTERNAL_PROVIDER_DIR, "codex-network-guard.js"), "network-guard"],
   [path.join(INTERNAL_PROVIDER_DIR, "codex-brand-text.js"), "brand-text"],
+  [path.join(INTERNAL_PROVIDER_DIR, "codex-menu-item-guard.js"), "menu-item-guard"],
 ]);
 const OFFICIAL_OPEN_IN_FOLDER_MESSAGE_ID = "artifactTab.preview.openInFolder";
 const OPENCODEX_DOWNLOAD_FILE_MESSAGE_ID = "web.remoteFile.downloadFile";
@@ -309,6 +311,7 @@ const WEB_SHELL_STATIC_FILES = new Map([
   // 出站域名拦截与品牌文字替换同样独立成文件，按 provider key 自动注册进聚合运行时。
   [CODEX_NETWORK_GUARD_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-network-guard.js")],
   [CODEX_BRAND_TEXT_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-brand-text.js")],
+  [CODEX_MENU_ITEM_GUARD_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-menu-item-guard.js")],
   [CODEX_APP_HOST_MESSAGE_CODEC_PATH, path.join(WEB_SHELL_DIR, "codex-app-host-message-codec.js")],
   [CODEX_BRIDGE_POLYFILL_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-bridge-polyfill.js")],
   [CODEX_REMOTE_FILE_ACTIONS_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-remote-file-actions.js")],
@@ -730,6 +733,7 @@ function createStaticAssetService({
         // 域名拦截与品牌文字替换同理，须在 Kernel 激活前装上。
         CODEX_NETWORK_GUARD_PATH,
         CODEX_BRAND_TEXT_PATH,
+        CODEX_MENU_ITEM_GUARD_PATH,
         OPENCODEX_MODIFICATION_ACTIVATE_PATH,
       ].map((reqPath) => WEB_SHELL_STATIC_FILES.get(reqPath)),
     };
@@ -1029,6 +1033,7 @@ function createStaticAssetService({
           // 修改点会在 locate 阶段被判 unsupported。
           runtimeScript(CODEX_NETWORK_GUARD_PATH),
           runtimeScript(CODEX_BRAND_TEXT_PATH),
+          runtimeScript(CODEX_MENU_ITEM_GUARD_PATH),
           runtimeScript(OPENCODEX_MODIFICATION_ACTIVATE_PATH),
         ];
     // manifest 在 Cloudflare Access 等前置认证后面也必须带同源凭据，否则 Chrome 可能拿不到受保护的 manifest。

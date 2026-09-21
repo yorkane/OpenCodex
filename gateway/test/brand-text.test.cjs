@@ -257,6 +257,25 @@ function createHarness(brandName) {
 }
 
 test("initial scan replaces brand words in rendered title and text nodes", () => {
+test("lowercase openai account label is rewritten while lowercase codex in a user title is preserved", () => {
+  // 官方账号名渲染成小写 openai，必须命中；而正文里的 codex 常见于用户自己写的会话标题，
+  // 大小写敏感匹配让这类内容保持原样。
+  const harness = createHarness("wdev");
+  const intro = new harness.dom.FakeElement("p");
+  const account = new harness.dom.FakeElement("span");
+  account.append(new harness.dom.FakeTextNode("openai"));
+  const userTitle = new harness.dom.FakeElement("span");
+  userTitle.append(new harness.dom.FakeTextNode("重启本机的codex 和 codex app"));
+  intro.append(account);
+  intro.append(userTitle);
+  harness.dom.body.append(intro);
+
+  harness.install();
+
+  assert.equal(account.textContent, "wdev");
+  assert.equal(userTitle.textContent, "重启本机的codex 和 codex app");
+});
+
   const harness = createHarness("wdev");
   harness.dom.document.title = "ChatGPT - 会话名";
   const intro = new harness.dom.FakeElement("p");

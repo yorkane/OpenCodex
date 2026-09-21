@@ -53,7 +53,14 @@
   w.__opencodexBrandTextInstalled = providerGeneration;
 
   // 品牌词替换规则：只在词边界替换，大小写敏感（codex / CodexApp / codex2 都不命中）。
-  const BRAND_WORD_RE = /\bChatGPT\b|\bOpenAI\b|\bCodex\b/g;
+  /**
+   * 品牌词替换规则，只在词边界替换。
+   *
+   * 官方账号名渲染成小写 openai（左下角与账号菜单标题都是纯文字），必须覆盖；
+   * 而小写 codex 常见于用户自己写的会话标题（例如「重启本机的codex 和 codex app」），
+   * 因此只对 OpenAI 放宽大小写，ChatGPT / Codex 仍保持大小写敏感，避免改坏用户内容。
+   */
+  const BRAND_WORD_RE = /\bChatGPT\b|\bOpenAI\b|\bCodex\b|\bopenai\b/g;
 
   // 会话内容与代码容器：命中任一即整棵子树不参与替换（含 script/style/template）。
   const EXCLUDED_CONTENT_SELECTOR = [

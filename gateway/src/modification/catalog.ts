@@ -322,6 +322,8 @@ export const POINT_DEFINITIONS = Object.freeze([
   point("web.runtime.dom.tooltip-dismiss", "适配官方 Tooltip 挂载和关闭", "web-shell", G.rendererUi, A.semanticView),
   // 品牌文字替换只作用于已渲染的 DOM 文本与用户可见属性，SPA 动态节点由 MutationObserver 覆盖。
   point("web.runtime.dom.brand-text", "把已渲染界面的官方品牌文字替换为站点品牌名", "web-shell", G.rendererUi, A.semanticView),
+  // 官方帮助菜单的新功能/帮助与账号菜单的显示宠物都是外链或无关入口，按文案隐藏。
+  point("web.runtime.dom.menu-item-guard", "隐藏官方帮助与宠物里的无关菜单项", "web-shell", G.rendererUi, A.semanticView),
   windowControlsOverlayPoint(),
   pluginPoint("web.runtime.smart-router.composer", "定位并适配官方模型选择器", "smart-router", G.smartRouting, P.smartModelRouter, A.semanticView),
   pluginPoint("web.runtime.smart-router.settings", "向官方设置注入智能调度页面", "smart-router", G.smartRouting, P.smartModelRouter, A.semanticView),

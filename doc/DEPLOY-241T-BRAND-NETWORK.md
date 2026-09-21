@@ -46,18 +46,20 @@ network:
 | IPC 中继 | `gateway/runtime/ipc/official-runtime.cjs`（`maybeHandleConfiguredNetworkBlockNoop`） | renderer→main 的 fetch 委托按清单兜底 |
 | 浏览器 | `web-shell/internal/providers/codex-network-guard.js`（新增 Provider） | `fetch` / `XHR` / `sendBeacon` 三通道按清单拦截 |
 | 浏览器文案 | `web-shell/internal/providers/codex-brand-text.js`（新增 Provider） | 已渲染 DOM 的品牌词与 `document.title` |
+| 菜单项隐藏 | `web-shell/internal/providers/codex-menu-item-guard.js`（新增 Provider） | 帮助菜单的「新功能/帮助」、账号菜单的「显示宠物」 |
 | 官方 HTML | `gateway/runtime/http/static-assets.cjs` `patchHtmlBrand` | 官方 `<title>` 与 PWA meta |
 | 登录页/PWA | 同文件 `createWebShellIndexResponse` / `patchPwaManifestBrand` | 登录壳标题、`manifest.webmanifest` |
 | 启动器 | `launcher/main.cjs` / `launcher/renderer.js` / `launcher/index.html` | 窗口标题、托盘提示、品牌位、页签标题 |
 | i18n | `shared/i18n/index.cjs` `withBrandName` | 文案表里的产品名统一替换 |
 
-### 新增修改点（骨架目录 105 → 108）
+### 新增修改点（骨架目录 105 → 109）
 
 | id | 组 | 含义 |
 |---|---|---|
 | `static.cache.renderer.html.brand` | renderer-resources | 官方 HTML 品牌文案改写 |
 | `web.runtime.network.guard` | web-network | 浏览器三通道按清单拦截出站请求 |
 | `web.runtime.dom.brand-text` | renderer-ui | 已渲染界面品牌文字替换 |
+| `web.runtime.dom.menu-item-guard` | renderer-ui | 隐藏官方帮助与宠物里的无关菜单项 |
 
 `web.runtime.*` 的点必须各自绑定一个浏览器 Provider，否则骨架装配层直接抛错，
 因此 `codex-network-guard.js` / `codex-brand-text.js` 与上表两点是一一对应的。
@@ -179,7 +181,26 @@ web.runtime.network.guard        -> healthy  exercise={"status":"active","hitCou
 与本次改动无关。新增测试：`site-config.test.cjs`、`network-guard.test.cjs`、`brand-text.test.cjs`
 以及 `static-assets.test.cjs` / `official-runtime.test.cjs` 内的品牌与拦截用例。
 
-## 4. 回滚
+### 3.6 界面清理（2026-09-21 追加）
+
+浏览器实测（playwright 经隧道访问 241.t）：
+
+```
+左下角账号按钮      : wdev                （原 openai）
+账号菜单标题        : wdev                （原 openai）
+账号菜单可见项      : wdev / Settings / 退出认证   （「显示宠物」已移除）
+帮助菜单可见项      : Keyboard shortcuts          （「新功能」「帮助」已移除）
+用户会话标题        : 重启本机的codex 和 codex app  （保持原样，未误伤）
+受拦截域名请求      : fetch ab.chatgpt.com -> 200 application/json {}
+```
+
+诊断页三个新点均为 `healthy` 且 `exercise.status = active`：
+
+```
+static.cache.renderer.html.brand -> healthy  hitCount=17
+web.runtime.dom.brand-text       -> healthy  hitCount=1
+web.runtime.dom.menu-item-guard  -> healthy  hitCount=1
+```
 
 ```bash
 # 1) 恢复补丁面文件
@@ -190,6 +211,8 @@ sudo cp -a /etc/ocx-stack/gateway-config.yaml.bak-brand-* /etc/ocx-stack/gateway
 # 3) 重启
 sudo systemctl restart ocx-stack-gateway
 ```
+
+## 4. 回滚
 
 ## 5. 外部请求域名清单（「整理」交付物）
 
@@ -238,3 +261,7 @@ network:
 - 官方 JS chunk 内部的功能常量（如品牌请求头 `ChatGPT-Account-Id`、产品模式比较）刻意保留，
   它们不是界面文案，改坏会破坏 API 身份。
 - 订阅名（`ChatGPT Pro`/`Plus`/`Go` 等）未替换，属官方计费体系文案，保持原样。
+- 菜单项隐藏按**可见文案**匹配（108 条多语言字符串）。官方若改文案，需要在
+  `codex-menu-item-guard.js` 的 `HIDDEN_MENU_LABELS` 里补上，否则该项会重新出现；
+  这是官方菜单项没有稳定属性的必然代价。
+- 小写 `codex` 刻意不替换：它常见于用户自己写的会话标题，改写会损坏用户内容。
