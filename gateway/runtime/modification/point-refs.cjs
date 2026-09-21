@@ -64,6 +64,7 @@ const staticRenderer = Object.freeze({
   iconPwa: requiredPoint("static.cache.renderer.html.icon-pwa"),
   assetPathMap: requiredPoint("static.cache.renderer.html.asset-path-map"),
   fontPreload: requiredPoint("static.cache.renderer.html.font-preload"),
+  htmlBrand: requiredPoint("static.cache.renderer.html.brand"),
   runtimeBootstrap: requiredPoint("static.cache.renderer.html.runtime-bootstrap"),
   startupPreload: requiredPoint("static.cache.renderer.html.startup-preload"),
   sidebarPreview: requiredPoint("static.cache.renderer.html.sidebar-preview"),

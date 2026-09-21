@@ -78,6 +78,66 @@ test("Statsig net.fetch hook answers control-plane URLs locally and passes other
   });
 });
 
+test("network block list short-circuits matching hosts and lets the rest reach the native fetch", async () => {
+  // 配置清单命中时必须本地回 200，而不是把请求放给原生 net.fetch（受限网络下会黑洞挂起且泄露信息）。
+  const passthrough = [];
+  const blocked = [];
+  const electronModule = {
+    net: {
+      fetch: async (...args) => {
+        passthrough.push(args);
+        return { ok: true, status: 201 };
+      },
+      request() {},
+    },
+  };
+  const hook = installOfficialNetFetchStatsigHook(electronModule, {
+    network: { blockedHosts: ["*.chatgpt.com", "statsigapi.net"], allowedHosts: ["ok.chatgpt.com"] },
+    onBlocked: (url) => blocked.push(url),
+    // 单测并行时会争用全局 electron 模块 hook；这里用空实现跳过全局注册，只测包装后的 net.fetch。
+    registerOverride: () => {},
+  });
+  assert.equal(hook.installed, true);
+  const hookedNet = hook.net;
+
+  const blockedResponse = await hookedNet.fetch("https://ab.chatgpt.com/v1/initialize?k=x");
+  assert.equal(blockedResponse.status, 200);
+  assert.equal(await blockedResponse.text(), "{}");
+  assert.deepEqual(blocked, ["https://ab.chatgpt.com/v1/initialize?k=x"]);
+  assert.equal(passthrough.length, 0);
+
+  // allow 名单里的主机即使落在 block 域族内也必须透传。
+  const allowedResponse = await hookedNet.fetch("https://ok.chatgpt.com/whatever");
+  assert.equal(allowedResponse.status, 201);
+  assert.equal(passthrough.length, 1);
+
+  // 不在清单内的外部域名同样透传，避免误伤模型服务等合法出站。
+  const otherResponse = await hookedNet.fetch("https://api.example.com/v1/models");
+  assert.equal(otherResponse.status, 201);
+  assert.equal(passthrough.length, 2);
+});
+
+test("network block list can be disabled entirely", async () => {
+  const passthrough = [];
+  const electronModule = {
+    net: {
+      fetch: async (...args) => {
+        passthrough.push(args);
+        return { ok: true, status: 201 };
+      },
+      request() {},
+    },
+  };
+  const hook = installOfficialNetFetchStatsigHook(electronModule, {
+    network: { blockedHosts: [], allowedHosts: [] },
+    registerOverride: () => {},
+  });
+  const response = await hook.net.fetch("https://ab.chatgpt.com/v1/initialize");
+  // 空清单时不按配置拦截；请求仍走 Statsig 固定短路（返回 200 gate 配置）。
+  assert.equal(response.status, 200);
+  assert.equal(passthrough.length, 0);
+});
+
 test("forwards structured official app-host messages and preserves close signals", () => {
   const forwarded = [];
   const closed = [];

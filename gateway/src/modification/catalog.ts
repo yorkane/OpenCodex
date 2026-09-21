@@ -303,6 +303,8 @@ export const POINT_DEFINITIONS = Object.freeze([
   point("web.runtime.network.telemetry", "阻止隐藏 Web 环境发送无效遥测", "web-shell", G.webNetwork, A.networkRequest),
   // XHR/Beacon 与 fetch 是两条独立上报通道，单独成点才能分别观察是否真被本地吞掉。
   point("web.runtime.network.telemetry-guard", "本地吞掉 Statsig XHR 与 Beacon 遥测", "web-shell", G.webNetwork, A.networkRequest),
+  // 出站域名拦截走共享网络 Hook：fetch/XHR/Beacon 三通道统一按站点策略本地应答。
+  point("web.runtime.network.guard", "按站点策略拦截被配置屏蔽的出站请求域名", "web-shell", G.webNetwork, A.networkRequest),
   point("web.runtime.protocol.connector-logo", "合并 connector logo IPC 请求", "web-shell", G.webNetwork, A.semanticProtocol),
   point("web.runtime.dom.webview-shim", "使用 iframe 模拟 Electron webview", "web-shell", G.rendererUi, A.semanticView),
   point("web.runtime.native.file-picker", "把 Electron 文件选择转换为浏览器文件选择", "web-shell", G.browserPlatform, A.browserNative),
@@ -318,6 +320,8 @@ export const POINT_DEFINITIONS = Object.freeze([
   point("web.runtime.dom.late-module-preload", "延迟加载非首屏官方模块", "web-shell", G.startupHistory, A.semanticView),
   point("web.runtime.dom.offscreen-animation", "暂停离屏官方动画", "web-shell", G.backgroundEfficiency, A.semanticView),
   point("web.runtime.dom.tooltip-dismiss", "适配官方 Tooltip 挂载和关闭", "web-shell", G.rendererUi, A.semanticView),
+  // 品牌文字替换只作用于已渲染的 DOM 文本与用户可见属性，SPA 动态节点由 MutationObserver 覆盖。
+  point("web.runtime.dom.brand-text", "把已渲染界面的官方品牌文字替换为站点品牌名", "web-shell", G.rendererUi, A.semanticView),
   windowControlsOverlayPoint(),
   pluginPoint("web.runtime.smart-router.composer", "定位并适配官方模型选择器", "smart-router", G.smartRouting, P.smartModelRouter, A.semanticView),
   pluginPoint("web.runtime.smart-router.settings", "向官方设置注入智能调度页面", "smart-router", G.smartRouting, P.smartModelRouter, A.semanticView),
@@ -382,6 +386,8 @@ export const POINT_DEFINITIONS = Object.freeze([
   point("static.cache.renderer.html.icon-pwa", "注入 Web 和 PWA 图标", "renderer-cache", G.rendererResources, A.officialRendererPatch),
   point("static.cache.renderer.html.asset-path-map", "映射官方静态资源路径", "renderer-cache", G.rendererResources, A.officialRendererPatch),
   point("static.cache.renderer.html.font-preload", "移除无法复用的字体预载", "renderer-cache", G.rendererResources, A.officialRendererPatch),
+  // 官方 bundle 的 <title> 与 PWA meta 里写着官方品牌，响应期换成站点品牌名。
+  point("static.cache.renderer.html.brand", "把官方 HTML 品牌文案替换为站点品牌名", "renderer-cache", G.rendererResources, A.officialRendererPatch),
   point("static.cache.renderer.html.runtime-bootstrap", "注入 OpenCodex Web 运行时", "renderer-cache", G.rendererCore, A.officialRendererPatch),
   point("static.cache.renderer.html.startup-preload", "注入首屏静态资源预载", "renderer-cache", G.startupHistory, A.officialRendererPatch),
   point("static.cache.renderer.html.sidebar-preview", "注入首屏侧栏预览", "renderer-cache", G.startupHistory, A.officialRendererPatch),

@@ -440,8 +440,67 @@ function readAuthEnabled(configPath) {
 
 function writeAuthConfig(paths, password) {
   const value = String(password || "").trim();
-  const stored = value ? `sha256-v1:${sha256Hex(value)}` : "";
-  fs.writeFileSync(paths.configPath, `auth:\n  password: ${JSON.stringify(stored)}\n`, "utf8");
+  const stored = value ? "sha256-v1:" + sha256Hex(value) : "";
+  /**
+   * 只重写 auth.password 相关行，保留用户在同一个 config.yaml 里写的其它配置块
+   * （brand、network 等）。整文件覆盖会让这些块在 launcher 内改动设置后静默丢失。
+   */
+  let configText = "";
+  try {
+    configText = fs.readFileSync(paths.configPath, "utf8");
+  } catch {
+    configText = "";
+  }
+  const desiredLine = "  password: " + JSON.stringify(stored);
+  if (/^auth\s*:\s*$/m.test(configText)) {
+    // 已有 password 行就替换其值；否则插在 auth: 之后，保持其它块不动。
+    configText = /^\s*password\s*:.*$/m.test(configText)
+      ? configText.replace(/^(\s*)password\s*:.*$/m, desiredLine)
+      : configText.replace(/^auth\s*:\s*$/m, "auth:\n" + desiredLine);
+    fs.writeFileSync(paths.configPath, configText.endsWith("\n") ? configText : configText + "\n", "utf8");
+    return;
+  }
+  // 还没有 auth 块：追加到文件末尾，不改动已有内容。
+  const prefix = configText && !configText.endsWith("\n") ? configText + "\n" : configText;
+  fs.writeFileSync(paths.configPath, prefix + "auth:\n" + desiredLine + "\n", "utf8");
+}
+
+/**
+ * 读取 config.yaml 里 brand.name 配置的品牌名。
+ * 与 gateway/runtime/core/site-config.cjs 保持同一套取值优先级（环境变量 > 配置文件 > 默认），
+ * 但 launcher 是独立进程，不能直接 require gateway 运行时，因此这里只做最小解析。
+ */
+function readConfiguredBrandName(configPath) {
+  const envName = String(process.env.OPENCODEX_BRAND_NAME || "").trim();
+  if (envName) return envName;
+  try {
+    const raw = fs.readFileSync(configPath, "utf8");
+    const lines = raw.split(/\r?\n/);
+    let inBrand = false;
+    let brandIndent = -1;
+    for (const line of lines) {
+      const logical = stripYamlComment(line);
+      if (!logical.trim()) continue;
+      const indent = (line.match(/^(\s*)/) || ["", ""])[1].length;
+      // 顶层的 brand: 块，其缩进必须小于后续的 name: 行。
+      if (indent === 0 && /^brand\s*:\s*$/.test(logical.trim())) {
+        inBrand = true;
+        brandIndent = indent;
+        continue;
+      }
+      if (!inBrand) continue;
+      // 缩进回到顶层说明 brand 块已经结束。
+      if (indent <= brandIndent) {
+        inBrand = false;
+        continue;
+      }
+      const nameMatch = logical.match(/^\s*name\s*:\s*(.*)$/);
+      if (nameMatch) return parseYamlStringScalar(nameMatch[1]).trim();
+    }
+  } catch {
+    // 配置文件缺失或不可读时回落到默认品牌名。
+  }
+  return "";
 }
 
 function externalPluginStatus(pluginDirs) {
@@ -639,6 +698,8 @@ function buildState() {
     locale: i18n.locale,
     messages: i18n.messages,
     i18nSource: i18n.source,
+    // 启动器窗口标题、品牌位与托盘提示都跟随可配置品牌名。
+    brand: { name: launcherBrandName() },
   };
 }
 
@@ -658,6 +719,23 @@ function currentGatewayI18n() {
 function launcherText(key, values) {
   const i18n = currentGatewayI18n();
   return formatMessage(i18n.messages, key, values);
+}
+
+/**
+ * 启动器展示用的品牌名。
+ * 优先取 gateway 状态里已解析好的品牌名（gateway 是唯一权威来源），
+ * gateway 还没起来时退回本地读 config.yaml，最后才是历史默认值 OpenCodex。
+ */
+function launcherBrandName() {
+  const fromGateway = gatewayState.status && gatewayState.status.brand;
+  if (fromGateway && typeof fromGateway.name === "string" && fromGateway.name.trim()) {
+    return fromGateway.name.trim();
+  }
+  if (gatewayState.paths && gatewayState.paths.configPath) {
+    const fromConfig = readConfiguredBrandName(gatewayState.paths.configPath);
+    if (fromConfig) return fromConfig;
+  }
+  return "OpenCodex";
 }
 
 async function checkLatestRelease() {
@@ -1097,7 +1175,7 @@ function createWindow() {
     height: 720,
     minWidth: 820,
     minHeight: 600,
-    title: "OpenCodex",
+    title: launcherBrandName(),
     backgroundColor: "#f7f6f2",
     autoHideMenuBar: true,
     webPreferences: {
@@ -1243,7 +1321,10 @@ function updateTrayMenu() {
   );
 
   trayMenu = Menu.buildFromTemplate(menuTemplate);
-  tray.setToolTip(launcherText("launcher.tray.tooltip"));
+  // 托盘提示里的产品名跟随可配置品牌名，而不是固定文案。
+  const brandName = launcherBrandName();
+  const tooltip = launcherText("launcher.tray.tooltip");
+  tray.setToolTip(tooltip.split("OpenCodex").join(brandName));
   tray.setContextMenu(trayMenu);
 }
 

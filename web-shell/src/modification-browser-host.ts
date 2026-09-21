@@ -232,6 +232,10 @@ const BROWSER_PROVIDER_DEFINITIONS: readonly BrowserProviderDefinition[] = Objec
   { key: "workspace-root-picker", points: { primary: "web.runtime.workspace.root-picker" } },
   { key: "tooltip-dismiss", points: { primary: "web.runtime.dom.tooltip-dismiss" } },
   { key: "statsig-telemetry-guard", points: { primary: "web.runtime.network.telemetry-guard" } },
+  // 出站域名拦截：fetch/XHR/Beacon 三通道统一按站点网络策略本地应答。
+  { key: "network-guard", points: { primary: "web.runtime.network.guard" } },
+  // 品牌文字替换：把已渲染 DOM 文本与用户可见属性里的官方品牌词换成站点品牌名。
+  { key: "brand-text", points: { primary: "web.runtime.dom.brand-text" } },
 ]);
 
 const MOBILE_SIDEBAR_TOUCH_SCROLL_STYLE_ID = "opencodex-mobile-sidebar-touch-scroll-styles";

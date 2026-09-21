@@ -18,23 +18,23 @@ const {
 test("typed modification catalog assigns every point to a group and adapter chain", () => {
   assert.equal(POINT_GROUP_DEFINITIONS.length, 17);
   assert.equal(ADAPTER_DEFINITIONS.length, 23);
-  assert.equal(POINT_DEFINITIONS.length, 105);
-  assert.equal(POINT_TARGETS.length, 105);
-  assert.equal(MIGRATION_MATRIX.length, 105);
+  assert.equal(POINT_DEFINITIONS.length, 108);
+  assert.equal(POINT_TARGETS.length, 108);
+  assert.equal(MIGRATION_MATRIX.length, 108);
   assert.equal(MIGRATION_MATRIX.every((entry) => entry.migrationStatus === "migrated"), true);
   assert.deepEqual(
     ["browser", "gateway", "static", "runner"].map(
       (host) => MIGRATION_MATRIX.filter((entry) => entry.host === host).length
     ),
-    [38, 37, 25, 5]
+    [40, 37, 26, 5]
   );
-  assert.equal(new Set(POINT_TARGETS).size, 105);
-  assert.equal(new Set(POINT_DEFINITIONS.map((point) => point.id)).size, 105);
+  assert.equal(new Set(POINT_TARGETS).size, 108);
+  assert.equal(new Set(POINT_DEFINITIONS.map((point) => point.id)).size, 108);
   assert.deepEqual(
     ["web.runtime.", "gateway.runtime.", "static.cache."].map(
       (prefix) => POINT_DEFINITIONS.filter((point) => point.id.startsWith(prefix)).length
     ),
-    [38, 37, 30]
+    [40, 37, 31]
   );
   assert.equal(POINT_DEFINITIONS.every((point) => point.group && point.contributions.length > 0), true);
   assert.equal(POINT_DEFINITIONS.every((point) => point.contributions.every((item) => {
@@ -65,13 +65,13 @@ test("typed modification catalog assigns every point to a group and adapter chai
       "background-efficiency": 8,
       "token-usage": 2,
       "mobile-interaction": 5,
-      "renderer-ui": 6,
+      "renderer-ui": 7,
       "browser-platform": 3,
-      "web-network": 4,
+      "web-network": 5,
       "gateway-runtime": 10,
       "gateway-ipc": 4,
       "official-main": 3,
-      "renderer-resources": 8,
+      "renderer-resources": 9,
       "runner-packaging": 5,
     }
   );

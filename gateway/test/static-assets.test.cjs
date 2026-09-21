@@ -386,7 +386,87 @@ test("compatibility capabilities preserve renderer HTML output byte for byte", (
   compatibilityService.dispose();
 });
 
+test("renderer HTML brand patch replaces the official title with the configured brand name", (t) => {
+  const webviewDir = makeOfficialWebviewDir(t);
+  const html = createService(webviewDir).createRendererResponse();
+  // 默认未配置 brand.name 时也必须去掉官方品牌，避免标签页泄露官方产品名。
+  assert.match(html, /<title>OpenCodex<\/title>/);
+  assert.doesNotMatch(html, /<title>Codex<\/title>/);
+});
+
+test("renderer HTML brand patch honors OPENCODEX_BRAND_NAME and keeps functional markup intact", (t) => {
+  const previous = process.env.OPENCODEX_BRAND_NAME;
+  const siteConfig = require("../runtime/core/site-config.cjs");
+  process.env.OPENCODEX_BRAND_NAME = "wdev";
+  siteConfig.clearSiteConfigCache();
+  try {
+    const webviewDir = makeOfficialWebviewDir(t);
+    // fixture 里额外塞入 CSP 与功能标记，确认品牌改写不会波及它们。
+    fs.writeFileSync(
+      path.join(webviewDir, "index.html"),
+      '<html><head><title>ChatGPT</title><meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;; img-src &#39;self&#39; codex-sandbox://x"></head><body></body></html>'
+    );
+    const html = createService(webviewDir).createRendererResponse();
+    assert.match(html, /<title>wdev<\/title>/);
+    // 注入的 PWA 元数据同样跟随品牌名。
+    assert.match(html, /<meta name="application-name" content="wdev">/);
+    assert.match(html, /<meta name="apple-mobile-web-app-title" content="wdev">/);
+    // 功能耦合内容必须原样保留，不能被品牌改写伤到。
+    assert.match(html, /codex-sandbox:\/\/x/);
+    assert.match(html, /image\/png/);
+  } finally {
+    if (previous === undefined) delete process.env.OPENCODEX_BRAND_NAME;
+    else process.env.OPENCODEX_BRAND_NAME = previous;
+    siteConfig.clearSiteConfigCache();
+  }
+});
+
 test("renderer defers injected runtime only when official scripts preserve its execution order", (t) => {
+test("PWA manifest application name follows the configured brand name", (t) => {
+  const previous = process.env.OPENCODEX_BRAND_NAME;
+  const siteConfig = require("../runtime/core/site-config.cjs");
+  process.env.OPENCODEX_BRAND_NAME = "wdev";
+  siteConfig.clearSiteConfigCache();
+  try {
+    const webviewDir = makeOfficialWebviewDir(t);
+    const service = createService(webviewDir);
+    const recorded = makeResponseRecorder();
+    const manifestPath = path.resolve(__dirname, "..", "..", "web-shell", "manifest.webmanifest");
+    service.serveFile({ headers: {} }, recorded, manifestPath, 200, "/manifest.webmanifest");
+    assert.equal(recorded.status, 200);
+    const manifest = JSON.parse(recorded.body.toString("utf8"));
+    // 安装后的窗口壳名字必须跟随品牌，且不能破坏 manifest 的其它结构。
+    assert.equal(manifest.name, "wdev");
+    assert.equal(manifest.short_name, "wdev");
+    assert.equal(manifest.start_url, "/");
+    assert.ok(Array.isArray(manifest.icons) && manifest.icons.length > 0);
+  } finally {
+    if (previous === undefined) delete process.env.OPENCODEX_BRAND_NAME;
+    else process.env.OPENCODEX_BRAND_NAME = previous;
+    siteConfig.clearSiteConfigCache();
+  }
+});
+test("web shell entry and PWA manifest carry the configured brand name", (t) => {
+  const previous = process.env.OPENCODEX_BRAND_NAME;
+  const siteConfig = require("../runtime/core/site-config.cjs");
+  process.env.OPENCODEX_BRAND_NAME = "wdev";
+  siteConfig.clearSiteConfigCache();
+  try {
+    const webviewDir = makeOfficialWebviewDir(t);
+    const service = createService(webviewDir);
+    // 登录页（未登录时刷新任意路由落到这里）必须用品牌名，而不是默认产品名。
+    const recorded = makeResponseRecorder();
+    service.serveWebShellIndex(recorded);
+    const html = recorded.body.toString("utf8");
+    assert.match(html, /<title>wdev<\/title>/);
+    assert.doesNotMatch(html, /<title>OpenCodex<\/title>/);
+    assert.match(html, /name="application-name" content="wdev"/);
+  } finally {
+    if (previous === undefined) delete process.env.OPENCODEX_BRAND_NAME;
+    else process.env.OPENCODEX_BRAND_NAME = previous;
+    siteConfig.clearSiteConfigCache();
+  }
+});
   const cases = [
     ["module", '<script data-official-case="module" type="module" src="./assets/module.js"></script>', true],
     ["deferred-classic", '<script data-official-case="deferred-classic" defer src="./assets/legacy.js"></script>', true],

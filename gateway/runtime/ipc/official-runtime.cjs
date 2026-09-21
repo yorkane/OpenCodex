@@ -29,7 +29,7 @@ const {
 } = require("../core/config.cjs");
 const { persistedAtomSnapshotForRenderer } = require("../state/desktop-state.cjs");
 const { diagnosticLog, diagnosticWarn, shortId } = require("../core/diagnostics.cjs");
-const { resolveOpenCodexI18n } = require("../../../shared/i18n/index.cjs");
+const { resolveOpenCodexI18n, withBrandName } = require("../../../shared/i18n/index.cjs");
 const { withPluginI18nMessages } = require("../core/plugin-assets.cjs");
 const {
   handleOfficialNotificationEvent,
@@ -41,6 +41,7 @@ const {
 } = require("../electron/official-electron-module-hook.cjs");
 const { hiddenTrayHookStatus, installOfficialTrayHook } = require("../electron/official-tray-hook.cjs");
 const { installOfficialNetFetchStatsigHook } = require("../electron/official-net-fetch-statsig-hook.cjs");
+const { getSiteConfig, isBlockedUrl } = require("../core/site-config.cjs");
 const { createOfficialLiveObserver } = require("./official-live-observer.cjs");
 const {
   gateway: gatewayPointRefs,
@@ -1610,6 +1611,22 @@ function maybeHandleStatsigControlPlaneFetchNoop(channel, args) {
   return sendStatsigControlPlaneNoopResponse(message, kind);
 }
 
+// 上面的两个 handler 只认识 Statsig 的固定几条路径。config.yaml 的 network.block 是通用清单，
+// 覆盖范围之外的官方业务请求（connector logo、backend-api 等）也会经这条 renderer→main 通道发出，
+// 因此需要在同一位置按清单兜底：命中就本地回一个空的 200，不让真实请求出去。
+function maybeHandleConfiguredNetworkBlockNoop(channel, args) {
+  if (channel !== MESSAGE_FROM_VIEW_CHANNEL) return false;
+  const message = fetchMessageFromIpcArgs(args);
+  if (!message) return false;
+  const network = getSiteConfig().network;
+  if (!network.configured || !isBlockedUrl(message.url, network)) return false;
+  diagnosticLog("network-guard", "fetch_blocked_by_config", {
+    method: message.method || "",
+    url: String(message.url).split("?")[0],
+  });
+  return sendStatsigTelemetryNoopResponse(message);
+}
+
 function parseJsonLike(value) {
   if (value && typeof value === "object" && !Array.isArray(value)) return value;
   if (typeof value !== "string" || value.trim() === "") return null;
@@ -1718,7 +1735,10 @@ function parseFetchResponseBodyJson(payload) {
 
 function getI18nSnapshot() {
   // OpenCodex 自有文案统一由 shared/i18n 解析，gateway 只负责发布解析后的快照。
-  return resolveOpenCodexI18n();
+  const i18n = resolveOpenCodexI18n();
+  // 品牌可配置：登录页、错误提示等文案里的产品名按 config.yaml 的 brand.name 替换。
+  const brandName = getSiteConfig().brand.name;
+  return { ...i18n, messages: withBrandName(i18n.messages, brandName) };
 }
 
 function logComputerUseAuthResponse(routeBase, payload) {
@@ -2298,6 +2318,8 @@ async function invokeOfficialIpc(channel, args = [], context = {}) {
   if (maybeHandleComputerUseAuthWriteNoop(channel, invokeArgs)) return true;
   if (maybeHandleStatsigTelemetryFetchNoop(channel, invokeArgs)) return true;
   if (maybeHandleStatsigControlPlaneFetchNoop(channel, invokeArgs)) return true;
+  // 通用域名清单兜底放在最后：固定 Statsig 路径优先，其余交给配置决定是否拦截。
+  if (maybeHandleConfiguredNetworkBlockNoop(channel, invokeArgs)) return true;
   logDesktopFeatureAvailability(channel, invokeArgs);
   const handler = officialIpc.handlers.get(channel);
   if (handler) {
@@ -2708,6 +2730,8 @@ function buildGatewayStatus() {
     officialTray: hiddenTrayHookStatus(),
     compatibility: compatibility || null,
     i18n: getI18nSnapshot(),
+    // gateway 是品牌名的权威来源；launcher 直接读这个字段，无需自己解析 config.yaml。
+    brand: getSiteConfig().brand,
     workspaceRoots: workspaceRootsFromEnv(),
   };
   // 配置与计数不是健康指标；汇总必需组件的就绪、安装及明确错误状态。
@@ -2728,6 +2752,8 @@ async function webConfigScript(options = {}) {
   // 这个脚本由浏览器入口动态加载，避免把本机路径和端口写死到 web-shell 构建产物里。
   const i18n = withPluginI18nMessages(getI18nSnapshot());
   const initialSidebarBootstrap = await initialSidebarBootstrapForRenderer();
+  // 品牌名与出站域名清单随首屏配置一次性下发：浏览器端 Provider 直接读，不需要额外接口往返。
+  const siteConfig = getSiteConfig();
   const gatewayPluginConfig =
     options.gatewayPluginConfig && typeof options.gatewayPluginConfig === "object"
       ? options.gatewayPluginConfig
@@ -2738,6 +2764,9 @@ async function webConfigScript(options = {}) {
     gatewayWsUrl: location.origin.replace(/^http/, "ws") + "/ws",
     workspaceRoots: ${JSON.stringify(workspaceRootsFromEnv())},
     homeDir: ${JSON.stringify(os.homedir())},
+    // brand.name 是界面上要展示的品牌名；network 是允许拦截的出站域名清单。
+    brand: ${JSON.stringify(siteConfig.brand)},
+    network: ${JSON.stringify(siteConfig.network)},
     locale: ${JSON.stringify(i18n.locale)},
     localeSource: ${JSON.stringify(i18n.source || "")},
     localeMode: ${JSON.stringify(i18n.mode || "")},
@@ -2859,6 +2888,8 @@ function startOfficialRuntime(options = {}) {
     gatewayPointRefs.netFetchStatsig,
     () => installOfficialNetFetchStatsigHook(electron, {
       onIntercept: () => recordRuntimeCompatibilityHit(gatewayPointRefs.netFetchStatsig),
+      // 把 config.yaml 的域名清单交给 hook：清单命中时回本地空响应，不走真实网络。
+      network: getSiteConfig().network,
     })
   );
   runRuntimeCompatibilityCapability(

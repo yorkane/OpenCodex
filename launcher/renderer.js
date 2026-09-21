@@ -221,6 +221,15 @@ function render(state) {
   renderOfficialAutoScanUpgrade(settings.officialAutoScanUpgrade);
   renderExternalPluginStatus(state.externalPlugins);
 
+  // 品牌名优先取 gateway 解析结果，缺失时保留 HTML 里的默认值。
+  const brandName = state.brand && state.brand.name ? String(state.brand.name) : "";
+  if (brandName) {
+    const titleNode = $("brandName");
+    if (titleNode) titleNode.textContent = brandName;
+    // 窗口标题与页签标题同步品牌名，避免启动器仍显示旧产品名。
+    document.title = brandName;
+  }
+
   // launcher 自身版本固定展示在左上角品牌区，避免占用设置列表空间。
   text("openCodexVersion", appInfo.version || t("common.unknown"));
   renderLatestRelease(state.latestRelease);

@@ -10,7 +10,7 @@ const MESSAGES = {
 };
 
 const RUNTIME_COMPATIBILITY_MESSAGES = {
-  // 103 个修改点的调试文案只在调试页注入，避免增加认证页和正式 Renderer 的启动配置。
+  // 107 个修改点的调试文案只在调试页注入，避免增加认证页和正式 Renderer 的启动配置。
   [ZH_CN]: require("./locales/runtime-compatibility-zh-CN.json"),
   [EN_US]: require("./locales/runtime-compatibility-en-US.json"),
 };
@@ -42,6 +42,25 @@ function formatMessage(messages, key, values) {
 
 function t(locale, key, values) {
   return formatMessage(messagesForLocale(locale), key, values);
+}
+
+// 历史文案里用 OpenCodex 作为产品名；品牌可配置后统一按这个字面量做替换。
+const DEFAULT_BRAND_NAME = "OpenCodex";
+
+/**
+ * 把文案值里的产品名换成配置品牌名。
+ * - 未配置（或就是默认名）时原样返回同一份对象，保证默认行为与字节完全不变。
+ * - 只替换默认产品名这个字面量，不动 i18n key 与占位符，避免破坏既有语义。
+ */
+function withBrandName(messages, brandName) {
+  const name = String(brandName == null ? "" : brandName).trim();
+  if (!name || name === DEFAULT_BRAND_NAME) return messages;
+  if (!messages || typeof messages !== "object") return messages;
+  const result = {};
+  for (const [key, value] of Object.entries(messages)) {
+    result[key] = typeof value === "string" ? value.split(DEFAULT_BRAND_NAME).join(name) : value;
+  }
+  return result;
 }
 
 function flattenLanguageCandidates(value) {
@@ -92,6 +111,7 @@ function resolveOpenCodexI18n(options = {}) {
 }
 
 module.exports = {
+  DEFAULT_BRAND_NAME,
   DEFAULT_LOCALE,
   EN_US,
   MESSAGES,
@@ -106,4 +126,5 @@ module.exports = {
   resolveOpenCodexLocale,
   runtimeCompatibilityMessagesForLocale,
   t,
+  withBrandName,
 };

@@ -2,6 +2,7 @@ const {
   registerOfficialElectronModuleOverride,
 } = require("./official-electron-module-hook.cjs");
 const { diagnosticLog } = require("../core/diagnostics.cjs");
+const { isBlockedUrl } = require("../core/site-config.cjs");
 
 // Electron main 的 net.fetch 是官方隐藏 renderer 所有 Statsig/遥测请求的最终出口。
 // 无外网出口的服务器上，对 ab.chatgpt.com / chatgpt.com 遥测的 TCP 连接会一直黑洞挂起，
@@ -115,6 +116,14 @@ function buildStatsigNetResponse(bodyJson, url, ResponseCtor) {
 
 function installOfficialNetFetchStatsigHook(electronModule, options = {}) {
   const onIntercept = typeof options.onIntercept === "function" ? options.onIntercept : null;
+  // network 策略来自 config.yaml；命中 block 清单的请求必须本地兜底而不是透传，
+  // 否则受限网络下 TCP 会一直黑洞挂起，把官方路由卡在 Suspense 里。
+  const network = options.network && typeof options.network === "object" ? options.network : null;
+  const onBlocked = typeof options.onBlocked === "function" ? options.onBlocked : null;
+  // 注册入口可注入：生产走全局 electron 模块 hook（进程内单例，只接受一个 electron 实例），
+  // 单测可在不改动全局状态的前提下验证包装后的 net.fetch 行为。
+  const registerOverride =
+    typeof options.registerOverride === "function" ? options.registerOverride : registerOfficialElectronModuleOverride;
   const nativeNet = electronModule && electronModule.net;
   if (!nativeNet || typeof nativeNet.fetch !== "function") {
     return { installed: false, reason: "net.fetch unavailable" };
@@ -124,6 +133,13 @@ function installOfficialNetFetchStatsigHook(electronModule, options = {}) {
   const hookedNet = Object.assign(Object.create(Object.getPrototypeOf(nativeNet)), nativeNet, {
     fetch(...args) {
       const url = extractUrlFromNetFetchArgs(args);
+      // 先按配置清单判定：被拦截的域名回 200 空对象，等价于「请求已完成」，
+      // 既避免真实出网泄露信息，也避免连接挂起拖垮调用方。
+      if (network && isBlockedUrl(url, network)) {
+        if (onBlocked) onBlocked(url);
+        diagnosticLog("network-guard", "net_fetch_blocked_by_config", { url: String(url).split("?")[0] });
+        return Promise.resolve(buildStatsigNetResponse("{}", url, ResponseCtor));
+      }
       const bodyJson = statsigLocalResponseBodyForUrl(url);
       if (!bodyJson) return nativeFetch(...args);
       if (onIntercept) onIntercept(url);
@@ -136,7 +152,7 @@ function installOfficialNetFetchStatsigHook(electronModule, options = {}) {
       return Promise.resolve(deliver());
     },
   });
-  registerOfficialElectronModuleOverride(electronModule, "net", hookedNet);
+  registerOverride(electronModule, "net", hookedNet);
   // 返回覆写后的 net 便于单测直接断言；线上官方代码通过 require("electron") 拿到同一包装对象。
   return { installed: true, net: hookedNet };
 }

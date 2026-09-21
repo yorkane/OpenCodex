@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 品牌名可由 config.yaml 的 brand.name 覆盖，渲染进程按 state.brand 刷新。 -->
     <title>OpenCodex</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -18,7 +19,8 @@
           <img class="logo" src="../web-shell/assets/icon.png" alt="Logo" />
           <div class="header-copy">
             <div class="brand-title">
-              <h1>OpenCodex</h1>
+              <!-- 品牌名可由 config.yaml 的 brand.name 覆盖，渲染进程按 state.brand 刷新。 -->
+              <h1 id="brandName">OpenCodex</h1>
               <span class="brand-version" id="openCodexVersion" data-i18n="common.unknown">未知</span>
               <!-- 仅当 GitHub latest release 与本地版本不同，渲染进程才会显示此更新入口。 -->
               <button class="update-badge" id="latestReleaseButton" type="button" hidden data-i18n="launcher.update.available">有新版本</button>

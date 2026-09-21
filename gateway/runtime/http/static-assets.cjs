@@ -13,6 +13,7 @@ const {
   readText,
 } = require("../core/config.cjs");
 const { isLoopbackHostHeader } = require("../core/loopback-host.cjs");
+const { DEFAULT_BRAND_NAME, getSiteConfig } = require("../core/site-config.cjs");
 const {
   OPENCODEX_PLUGIN_URL_PREFIX,
   listPluginEntries,
@@ -72,6 +73,8 @@ const CODEX_WORKSPACE_ROOT_PICKER_CSS_PATH = "/codex-workspace-root-picker.css";
 const CODEX_WORKSPACE_ROOT_PICKER_PATH = "/codex-workspace-root-picker.js";
 const CODEX_TOOLTIP_DISMISS_GUARD_PATH = "/codex-tooltip-dismiss-guard.js";
 const CODEX_STATSIG_TELEMETRY_GUARD_PATH = "/codex-statsig-telemetry-guard.js";
+const CODEX_NETWORK_GUARD_PATH = "/codex-network-guard.js";
+const CODEX_BRAND_TEXT_PATH = "/codex-brand-text.js";
 const FAVICON_PATH = "/favicon.ico";
 const PWA_MANIFEST_PATH = "/manifest.webmanifest";
 const OFFICIAL_LOADING_SHIMMER_POWER_GUARD = [
@@ -121,6 +124,8 @@ const BROWSER_PROVIDER_KEY_BY_FILE = new Map([
   [path.join(INTERNAL_PROVIDER_DIR, "codex-workspace-root-picker.js"), "workspace-root-picker"],
   [path.join(INTERNAL_PROVIDER_DIR, "codex-tooltip-dismiss-guard.js"), "tooltip-dismiss"],
   [path.join(INTERNAL_PROVIDER_DIR, "codex-statsig-telemetry-guard.js"), "statsig-telemetry-guard"],
+  [path.join(INTERNAL_PROVIDER_DIR, "codex-network-guard.js"), "network-guard"],
+  [path.join(INTERNAL_PROVIDER_DIR, "codex-brand-text.js"), "brand-text"],
 ]);
 const OFFICIAL_OPEN_IN_FOLDER_MESSAGE_ID = "artifactTab.preview.openInFolder";
 const OPENCODEX_DOWNLOAD_FILE_MESSAGE_ID = "web.remoteFile.downloadFile";
@@ -301,6 +306,9 @@ const WEB_SHELL_STATIC_FILES = new Map([
   ],
   // Statsig XHR/Beacon 遥测拦截由独立 Provider 承载，上游 bridge polyfill 保持零改动。
   [CODEX_STATSIG_TELEMETRY_GUARD_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-statsig-telemetry-guard.js")],
+  // 出站域名拦截与品牌文字替换同样独立成文件，按 provider key 自动注册进聚合运行时。
+  [CODEX_NETWORK_GUARD_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-network-guard.js")],
+  [CODEX_BRAND_TEXT_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-brand-text.js")],
   [CODEX_APP_HOST_MESSAGE_CODEC_PATH, path.join(WEB_SHELL_DIR, "codex-app-host-message-codec.js")],
   [CODEX_BRIDGE_POLYFILL_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-bridge-polyfill.js")],
   [CODEX_REMOTE_FILE_ACTIONS_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-remote-file-actions.js")],
@@ -386,6 +394,7 @@ function createStaticAssetService({
     [staticPoints.iconPwa, patchHtmlIcons],
     [staticPoints.assetPathMap, patchHtmlAssetPaths],
     [staticPoints.fontPreload, patchHtmlFontPreloads],
+    [staticPoints.htmlBrand, patchHtmlBrand],
     [staticPoints.assetNamespace, patchOfficialAssetUrls],
     [staticPoints.cspUnsafeEval, patchOfficialCspUnsafeEval],
     [staticPoints.cspManifestSrc, patchOfficialCspManifestSrc],
@@ -415,6 +424,7 @@ function createStaticAssetService({
   const patchHtmlIconsCompatible = capabilityFor(staticPoints.iconPwa);
   const patchHtmlAssetPathsCompatible = capabilityFor(staticPoints.assetPathMap);
   const patchHtmlFontPreloadsCompatible = capabilityFor(staticPoints.fontPreload);
+  const patchHtmlBrandCompatible = capabilityFor(staticPoints.htmlBrand);
   const patchOfficialAssetUrlsCompatible = capabilityFor(staticPoints.assetNamespace);
   const patchOfficialCspUnsafeEvalCompatible = capabilityFor(staticPoints.cspUnsafeEval);
   const patchOfficialCspManifestSrcCompatible = capabilityFor(staticPoints.cspManifestSrc);
@@ -717,6 +727,9 @@ function createStaticAssetService({
         CODEX_TOOLTIP_DISMISS_GUARD_PATH,
         // 遥测拦截须在 Kernel 激活前装上，保证官方 SDK 初始化时 XHR 原型已被接管。
         CODEX_STATSIG_TELEMETRY_GUARD_PATH,
+        // 域名拦截与品牌文字替换同理，须在 Kernel 激活前装上。
+        CODEX_NETWORK_GUARD_PATH,
+        CODEX_BRAND_TEXT_PATH,
         OPENCODEX_MODIFICATION_ACTIVATE_PATH,
       ].map((reqPath) => WEB_SHELL_STATIC_FILES.get(reqPath)),
     };
@@ -909,6 +922,8 @@ function createStaticAssetService({
     const threads = Array.isArray(snapshot?.threads) ? snapshot.threads.slice(0, 12) : [];
     if (threads.length === 0) return "";
     const chinese = String(locale || "").toLowerCase().startsWith("zh");
+    // 侧栏预览的品牌位跟随站点品牌名，不再固定显示官方产品名。
+    const brandLabel = escapeHtml(getSiteConfig().brand.name || DEFAULT_BRAND_NAME);
     const recentLabel = chinese ? "最近" : "Recent";
     const newThreadLabel = chinese ? "新对话" : "New thread";
     const fallbackTitle = chinese ? "未命名会话" : "Untitled conversation";
@@ -921,7 +936,7 @@ function createStaticAssetService({
       .join("");
     return `<aside id="opencodex-sidebar-preview" aria-label="${recentLabel}" aria-busy="true" data-opencodex-sidebar-preview-ready>
       <div class="opencodex-sidebar-preview__toolbar"><span class="opencodex-sidebar-preview__window">▣</span><span>←</span><span>→</span></div>
-      <div class="opencodex-sidebar-preview__brand">Codex <span>⌄</span></div>
+      <div class="opencodex-sidebar-preview__brand">${brandLabel} <span>⌄</span></div>
       <div class="opencodex-sidebar-preview__new"><span>⌑</span>${newThreadLabel}</div>
       <div class="opencodex-sidebar-preview__section">${recentLabel}</div>
       <div class="opencodex-sidebar-preview__rows">${rows}</div>
@@ -968,6 +983,8 @@ function createStaticAssetService({
     html = patchHtmlIconsCompatible(html);
     html = patchHtmlAssetPathsCompatible(html);
     html = patchHtmlFontPreloadsCompatible(html);
+    // 官方 HTML 自带的 <title> 与 PWA meta 里写着官方品牌，先统一换成站点品牌名。
+    html = patchHtmlBrandCompatible(html);
     const startupPreloads = startupAssetPreloads(html);
     const lateModuleHrefs = lateStartupModuleHrefs(i18n.locale);
     const previewMarkup = sidebarPreviewMarkup(options.sidebarPreview, i18n.locale);
@@ -1008,17 +1025,23 @@ function createStaticAssetService({
           // 聚合启动路径之外的逐文件回退加载同样要带上遥测拦截，否则官方 bundle 含 eager script
           // 或存在外部插件时该 Provider 根本不加载，修改点会在 locate 阶段被判 unsupported。
           runtimeScript(CODEX_STATSIG_TELEMETRY_GUARD_PATH),
+          // 逐文件回退路径同样要带上域名拦截与品牌替换，否则该 Provider 根本不加载，
+          // 修改点会在 locate 阶段被判 unsupported。
+          runtimeScript(CODEX_NETWORK_GUARD_PATH),
+          runtimeScript(CODEX_BRAND_TEXT_PATH),
           runtimeScript(OPENCODEX_MODIFICATION_ACTIVATE_PATH),
         ];
     // manifest 在 Cloudflare Access 等前置认证后面也必须带同源凭据，否则 Chrome 可能拿不到受保护的 manifest。
+    // 注入的 PWA 元数据同样跟随可配置品牌名，避免安装后的应用名还是默认产品名。
+    const brandName = getSiteConfig().brand.name || DEFAULT_BRAND_NAME;
     const base = [
       '<base href="/official/">',
       startupPreloads,
       `<link rel="manifest" href="${PWA_MANIFEST_PATH}" crossorigin="use-credentials">`,
       '<meta name="theme-color" content="#ffffff">',
-      '<meta name="application-name" content="OpenCodex">',
+      `<meta name="application-name" content="${escapeHtml(brandName)}">`,
       '<meta name="mobile-web-app-capable" content="yes">',
-      '<meta name="apple-mobile-web-app-title" content="OpenCodex">',
+      `<meta name="apple-mobile-web-app-title" content="${escapeHtml(brandName)}">`,
       '<meta name="apple-mobile-web-app-capable" content="yes">',
       '<meta name="apple-mobile-web-app-status-bar-style" content="default">',
       lateModuleHrefs
@@ -1202,6 +1225,29 @@ function createStaticAssetService({
     });
   }
 
+  /**
+   * 把官方 HTML 里的品牌文案换成站点品牌名（config.yaml 的 brand.name）。
+   *
+   * 只改「用户可见且确定属于产品名」的位置，避免误伤功能字符串：
+   * - <title> 标签内容；
+   * - application-name / apple-mobile-web-app-title 这两个 PWA meta 的 content。
+   * 不动 CSP、资源路径、脚本字段、私有协议等任何功能耦合内容。
+   * 品牌名缺失时回落到默认产品名，保证默认配置下标签页也不会暴露官方品牌。
+   */
+  function patchHtmlBrand(rawHtml) {
+    const configuredName = getSiteConfig().brand.name;
+    const brandName = configuredName || DEFAULT_BRAND_NAME;
+    return rawHtml
+      .replace(
+        /(<title>)([\s\S]*?)(<\/title>)/i,
+        (_match, start, _content, end) => start + brandName + end
+      )
+      .replace(
+        /(<meta\b[^>]*\bname=["'](?:application-name|apple-mobile-web-app-title)["'][^>]*\bcontent=["'])([^"']*)(["'])/gi,
+        (_match, start, _content, end) => start + brandName + end
+      );
+  }
+
   function webShellBootstrapScript(i18n) {
     const publicConfig = {
       locale: i18n.locale,
@@ -1227,6 +1273,26 @@ function createStaticAssetService({
       /(<span\b[^>]*\bdata-opencodex-version\b[^>]*>)([\s\S]*?)(<\/span>)/i,
       (_match, start, _content, end) => `${start}${escapeHtml(OPENCODEX_VERSION_LABEL)}${end}`
     );
+  }
+
+  /**
+   * PWA manifest 的应用名/短名跟随品牌名。只改这几个用户可见字段，
+   * 不动 start_url / scope / icons 等会影响安装与作用域的结构。
+   */
+  function patchPwaManifestBrand(rawJson) {
+    const brandName = getSiteConfig().brand.name || DEFAULT_BRAND_NAME;
+    try {
+      const manifest = JSON.parse(rawJson);
+      manifest.name = brandName;
+      manifest.short_name = brandName;
+      if (typeof manifest.description === "string") {
+        manifest.description = manifest.description.split(DEFAULT_BRAND_NAME).join(brandName);
+      }
+      return JSON.stringify(manifest, null, 2) + "\n";
+    } catch {
+      // manifest 解析失败时保持原样，不能让一个静态文件把入口打挂。
+      return rawJson;
+    }
   }
 
   function createPluginLoaderScript(entries = listPluginEntries()) {
@@ -1269,7 +1335,8 @@ ${pluginGatewayStateBootstrapScript()}
   function createWebShellIndexResponse() {
     const shell = path.join(WEB_SHELL_DIR, "index.html");
     const i18n = currentI18n();
-    let html = patchWebShellAppVersion(patchHtmlLang(readText(shell), i18n.locale));
+    // 登录页是浏览器第一个看到的界面，它的 <title> / PWA meta 同样要跟随品牌名。
+    let html = patchHtmlBrand(patchWebShellAppVersion(patchHtmlLang(readText(shell), i18n.locale)));
     const links = officialStyleLinks();
     if (links) {
       // web-shell 自己负责承载 UI，注入官方样式后视觉表现和桌面 renderer 保持一致。
@@ -1710,9 +1777,13 @@ ${pluginGatewayStateBootstrapScript()}
 
     const rawSourceData = fs.readFileSync(file);
     const providerKey = BROWSER_PROVIDER_KEY_BY_FILE.get(file);
-    const sourceData = providerKey
-      ? Buffer.from(wrapBrowserProviderSource(file, rawSourceData.toString("utf8")), "utf8")
-      : rawSourceData;
+    // PWA manifest 里的应用名同样按品牌名下发，否则安装到的窗口壳仍叫默认产品名。
+    const isPwaManifest = file === WEB_SHELL_STATIC_FILES.get(PWA_MANIFEST_PATH);
+    const sourceData = isPwaManifest
+      ? Buffer.from(patchPwaManifestBrand(rawSourceData.toString("utf8")), "utf8")
+      : providerKey
+        ? Buffer.from(wrapBrowserProviderSource(file, rawSourceData.toString("utf8")), "utf8")
+        : rawSourceData;
     const data = patchOfficialAsset(reqPath, sourceData, req);
     const response = gzipIfUseful(
       req,
