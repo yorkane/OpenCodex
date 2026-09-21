@@ -457,7 +457,24 @@ function createStaticAssetService({
   const patchPluginImageCompatible = capabilityFor(staticPoints.pluginImageLazyLoad);
   const patchOpenInFolderLocaleCompatible = capabilityFor(staticPoints.openInFolderLocale);
 
+  // 目录版本位形态：/official-patched-v8-<fp>/。指纹写进路径后，官方 chunk 的相对
+  // 动态导入（不带 query）也自动带同一版本位，这是 ?fp= 做不到的关键一点。
+  const VERSIONED_PATCHED_PREFIX_RE = /^\/official-patched-v8-[A-Za-z0-9_-]{10}\//;
+
+  /** 取路径命名空间里的版本位 token；非版本化前缀返回空串。 */
+  function versionedPatchedPrefixToken(reqPath) {
+    const match = /^(\/official-patched-v8)-([A-Za-z0-9_-]{10})\//.exec(reqPath);
+    return match ? match[2] : "";
+  }
+
+  /** 把版本化前缀还原成规范前缀，让补丁缓存条目按同一文件复用，不复制 2.8MB 主包。 */
+  function canonicalizeVersionedPatchedPath(reqPath) {
+    return versionedPatchedPrefixToken(reqPath) ? PATCHED_OFFICIAL_PREFIX + reqPath.slice(VERSIONED_PATCHED_PREFIX_RE.exec(reqPath)[0].length) : reqPath;
+  }
+
   function matchedPatchedOfficialPrefix(reqPath) {
+    // 版本化前缀整体作为前缀返回，patchedOfficialRelPath 因此仍能切出正确的 assets/ 相对路径。
+    if (VERSIONED_PATCHED_PREFIX_RE.test(reqPath)) return reqPath.slice(0, reqPath.indexOf("/", 1) + 1);
     return patchedOfficialPrefixes.find((prefix) => reqPath.startsWith(prefix)) || "";
   }
 
@@ -493,11 +510,12 @@ function createStaticAssetService({
     const locale = currentHostI18n();
     const remoteMessage = loopback ? "" : locale.messages?.[OPENCODEX_DOWNLOAD_FILE_MESSAGE_ID] || "Download file";
     // 实际输出只取决于 Host 类型和最终文案；语言标签本身不产生字节差异，避免为同文案复制大型 chunk。
+    // 缓存键用规范前缀：目录版本位只是 URL 层的缓存失效位，不能让每个指纹各存一份 2.8MB 主包。
     return {
       host: String(req?.headers?.host || ""),
       key: JSON.stringify([
         PATCHED_ASSET_PATCH_REVISION,
-        reqPath,
+        canonicalizeVersionedPatchedPath(reqPath),
         file,
         stat.dev,
         stat.ino,
@@ -866,11 +884,21 @@ function createStaticAssetService({
     return token;
   }
 
-  // 给 HTML 里指向 patched 命名空间的资源引用追加 ?fp=，让浏览器按内容指纹长缓存。
+  /**
+   * 生成 patched 命名空间下的资源 URL。
+   * 目录版本位 /official-patched-v8-<fp>/ 是主失效位：官方 chunk 的相对动态导入
+   * 只继承目录、不继承 query，因此 ?fp= 覆盖不到入口 chunk 的懒加载链路。
+   * 同时保留 ?fp= 作为双保险（HTML 显式引用可命中更严格的 fp 分支），
+   * 指纹算不出来时退回无前缀版本位，语义与改动前完全一致。
+   */
   function withPatchedFingerprint(href) {
     const token = currentPatchedFingerprintToken();
     if (!token) return href;
-    return href.includes("?") ? href + "&fp=" + token : href + "?fp=" + token;
+    // 只改写规范前缀；已带版本位的 URL 不重复处理。
+    const versioned = href.startsWith(PATCHED_OFFICIAL_PREFIX)
+      ? PATCHED_OFFICIAL_PREFIX.replace(/\/+$/, "") + "-" + token + href.slice(PATCHED_OFFICIAL_PREFIX.length - 1)
+      : href;
+    return versioned.includes("?") ? versioned + "&fp=" + token : versioned + "?fp=" + token;
   }
 
   function runtimeBootstrapRepresentation(req, entry) {
@@ -1157,8 +1185,10 @@ function createStaticAssetService({
   function patchOfficialAssetUrls(rawHtml) {
     // JS 的相对导入会把 CSS 也落到 patched 命名空间；HTML 同步改写 CSS，避免同一文件下载两次。
     return rawHtml.replace(
-      /((?:src|href)=["']\/official\/assets\/[^"'?#]+\.(?:js|css))(["'])/g,
-      (_match, prefix, quote) => `${withPatchedFingerprint(prefix.replace("/official/assets/", `${PATCHED_OFFICIAL_PREFIX}assets/`))}${quote}`
+      // 捕获组只取 URL 本体（属性名与引号留在组外），否则目录版本位会被拼进 src=" 前面。
+      /((?:src|href)=["'])(\/official\/assets\/[^"'?#]+\.(?:js|css))(["'])/g,
+      (_match, attribute, url, quote) =>
+        `${attribute}${withPatchedFingerprint(url.replace("/official/assets/", `${PATCHED_OFFICIAL_PREFIX}assets/`))}${quote}`
     );
   }
 
@@ -1759,6 +1789,12 @@ ${pluginGatewayStateBootstrapScript()}
       return "private, no-cache, must-revalidate";
     }
     if (patchedOfficialAssetName(reqPath)) {
+      // 目录版本位命中当前指纹：整条 URL（含相对导入继承到的目录）就是失效位，
+      // 无论响应是否经过响应期 patch 都可安全 immutable；这也是入口 chunk 二次导航
+      // 不再全量重下的关键，因为相对解析不携带 query，?fp= 对动态导入无效。
+      if (versionedPatchedPrefixToken(cleanPath) === currentPatchedFingerprintToken()) {
+        return "public, max-age=31536000, immutable";
+      }
       if (responsePatched) {
         // fp 命中时同样升级为长缓存：patch 输入维度全部进入指纹，URL 变则内容必变。
         if (fingerprint && fingerprint === currentPatchedFingerprintToken()) {
@@ -1769,10 +1805,11 @@ ${pluginGatewayStateBootstrapScript()}
       }
       /**
        * patched JS 的相对动态导入会让 CSS、字体和图片也落到当前 patched 命名空间；
-       * 这些文件不做响应期改写，只要文件名含 Vite content hash，就能和未改写 JS 一样安全长缓存。
-       */
+      * 这些文件不做响应期改写，只要文件名含 Vite content hash，就能和未改写 JS 一样安全长缓存。
+       * 版本化前缀同样适用：文件名自身的 content hash 已足以标识内容。
+      */
       if (
-        reqPath.startsWith(PATCHED_OFFICIAL_PREFIX) &&
+        (reqPath.startsWith(PATCHED_OFFICIAL_PREFIX) || VERSIONED_PATCHED_PREFIX_RE.test(reqPath)) &&
         CONTENT_HASHED_ASSET_FILE_RE.test(patchedOfficialAssetName(reqPath))
       ) {
         return "public, max-age=31536000, immutable";
