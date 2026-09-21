@@ -10,6 +10,12 @@ const PROVIDER_SOURCE = fs.readFileSync(
   path.join(REPO_ROOT, "web-shell", "internal", "providers", "codex-network-guard.js"),
   "utf8"
 );
+// bridge polyfill 是 Statsig initialize 完整 payload 的提供方（内层 fetch 包装 + 全局钩子），
+// 本文件需要它来校验两层拦截之间的源码级契约。
+const BRIDGE_POLYFILL_SOURCE = fs.readFileSync(
+  path.join(REPO_ROOT, "web-shell", "internal", "providers", "codex-bridge-polyfill.js"),
+  "utf8"
+);
 const STATIC_ASSETS_SOURCE = fs.readFileSync(
   path.join(REPO_ROOT, "gateway", "runtime", "http", "static-assets.cjs"),
   "utf8"
@@ -194,6 +200,78 @@ test("blocked fetch is answered locally with a 200 JSON response", async () => {
   assert.equal(response.body, "{}");
   assert.equal(response.headers["content-type"], "application/json; charset=utf-8");
   assert.equal(harness.scope.emits, 1, "each blocked request reports one hit");
+});
+
+test("the Statsig initialize endpoint keeps a parseable payload past the guard", async () => {
+  // 与 241.t 站点配置同形状：*.chatgpt.com 管子域，chatgpt.com 管主域（通配不匹配主域）。
+  const harness = createHarness({ blockedHosts: ["*.chatgpt.com", "chatgpt.com"], allowedHosts: [], configured: true });
+  // 模拟内层 bridge polyfill 暴露的 payload 构造器：SDK 解析 initialize 响应需要
+  // has_updates / feature_gates 等字段，裸 "{}" 会触发 "Failed to parse Response"。
+  const fullPayload = {
+    has_updates: true,
+    feature_gates: { some_gate: { name: "some_gate", value: true, rule_id: "gateway_override" } },
+    dynamic_configs: {},
+    layer_configs: {},
+  };
+  harness.window.__OpenCodexStatsigInitializeFallback = () => fullPayload;
+  harness.install();
+
+  const initializeUrl = "https://ab.chatgpt.com/v1/initialize?client=web";
+
+  // fetch 通道：命中 block 但属于 initialize 端点时必须透传回内层实现
+  // （polyfill 本地合成完整 payload，不出网），而不是回裸 "{}"。
+  const fetchResponse = await harness.window.fetch(initializeUrl);
+  assert.equal(fetchResponse.native, true, "initialize fetch must pass through to the inner implementation");
+  assert.equal(harness.calls.fetch.length, 1, "initialize fetch must reach the inner fetch wrapper");
+  assert.equal(harness.scope.emits, 0, "passthrough traffic must not report a hit");
+
+  // XHR 通道：响应体必须取自全局 payload 构造器，保持形状合法。
+  const xhr = new harness.FakeXHR();
+  xhr.open("GET", initializeUrl);
+  xhr.send(null);
+  assert.equal(harness.calls.send.length, 0, "initialize XHR must not reach the native send");
+  assert.equal(harness.scope.emits, 1, "the swallowed XHR reports one hit");
+  harness.scheduler.flush();
+  assert.equal(xhr.status, 200);
+  assert.equal(xhr.readyState, 4);
+  assert.deepEqual(JSON.parse(xhr.responseText), fullPayload, "XHR must carry the full Statsig payload");
+  assert.notEqual(xhr.responseText, "{}", "initialize must never be answered with bare {}");
+
+  // 遥测端点语义不变：SDK 只关心 200、不解析响应体，"{}" 足够。
+  // 用一个明确被封、且不属于 Statsig 任何特判通道的 URL 验证既有语义不被本次修改影响。
+  const telemetry = new harness.FakeXHR();
+  telemetry.open("POST", "https://chatgpt.com/ces/v1/rgstr");
+  telemetry.send("payload");
+  harness.scheduler.flush();
+  assert.equal(telemetry.status, 200);
+  assert.equal(telemetry.responseText, "{}", "telemetry endpoints keep the bare {} contract");
+
+  // 全局钩子缺失（异常装配顺序）时 XHR 回退 "{}" 保底，保证 provider 不因缺依赖而崩溃。
+  // 用独立 harness 验证，避免在同一实例上二次 install 造成 send 双重包装干扰计数。
+  const degraded = createHarness({ blockedHosts: ["*.chatgpt.com", "ab.chatgpt.com"], allowedHosts: [], configured: true });
+  degraded.install();
+  const degradedXhr = new degraded.FakeXHR();
+  degradedXhr.open("GET", initializeUrl);
+  degradedXhr.send(null);
+  degraded.scheduler.flush();
+  assert.equal(degradedXhr.status, 200);
+  assert.equal(degradedXhr.responseText, "{}", "missing fallback hook degrades to the mock body");
+});
+
+test("the bridge polyfill exposes the initialize payload builder for the network guard", () => {
+  // 源码级契约：polyfill 必须把构造器挂到命名空间全局，guard 必须消费它做 initialize 特判，
+  // 否则两层包装叠起来会用裸 "{}" 应答 initialize，SDK 会持续解析失败。
+  assert.ok(
+    BRIDGE_POLYFILL_SOURCE.includes(
+      "w.__OpenCodexStatsigInitializeFallback = buildStatsigInitializeResponse"
+    ),
+    "polyfill must expose the payload builder on the namespace global"
+  );
+  assert.ok(PROVIDER_SOURCE.includes("isStatsigInitializeUrl"), "guard must recognize the initialize endpoint");
+  assert.ok(
+    PROVIDER_SOURCE.includes("__OpenCodexStatsigInitializeFallback"),
+    "guard must consume the exposed payload builder"
+  );
 });
 
 test("unblocked fetch passes through to the native implementation", async () => {
