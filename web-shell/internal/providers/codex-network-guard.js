@@ -52,6 +52,21 @@
     }
   }
 
+  // Statsig 评估端点（ab.chatgpt.com/v1/*）的匹配：SDK 除 /v1/initialize 外还会请求
+  // /v1/download_config_specs、/v1/eval、/v1/deltas、live overlay 变体，这些响应同样
+  // 要过 _typedJsonParse 的类型校验，必须给出含 has_updates 的合法 JSON，不能回 "{}"。
+  function isStatsigEvaluationUrl(raw) {
+    try {
+      const parsed = new URL(String(raw || ""), location.href);
+      return (
+        parsed.hostname === "ab.chatgpt.com" &&
+        parsed.pathname.replace(/\/+$/, "").startsWith("/v1/")
+      );
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * initialize 端点的本地兜底响应体。
    * 为什么不能像其他被拦域名一样回裸 "{}"：Statsig SDK 的 StatsigEvaluationsDataAdapter
@@ -71,6 +86,23 @@
     } catch {
       return MOCK_RESPONSE_BODY;
     }
+  }
+
+  /**
+   * 非 initialize 评估端点的本地响应体（XHR 通道用）。
+   * 形状与 polyfill 的 buildStatsigEvaluationResponse 一致：has_updates:false 让 SDK
+   * 认为"无更新"、不再要求内容；deltas 路径附 checksum，overlay 路径附 response_mode。
+   * 优先复用 polyfill 挂出的构造器（保证两层形状一致），钩子缺失时用本地同形状兜底，
+   * 仍然远比裸 "{}" 安全（裸体缺 has_updates 必刷 parse error）。
+   */
+  function statsigEvaluationBody(pathname) {
+    const fallback = w.__OpenCodexStatsigEvaluationFallback;
+    if (typeof fallback === "function") {
+      try {
+        return JSON.stringify(fallback(pathname));
+      } catch {}
+    }
+    return JSON.stringify({ has_updates: false, time: Date.now(), feature_gates: {}, dynamic_configs: {}, layer_configs: {} });
   }
 
   /**
@@ -143,10 +175,12 @@
       if (!isBlocked(parsed)) {
         return originalFetch(input, init);
       }
-      // Statsig initialize 特判：透传回内层实现，而不是回裸 "{}"。
-      // 内层（codex-bridge-polyfill 的 fetch 包装）会为该 URL 本地合成完整合法 payload，
-      // 请求并不会真的出网，所以透传不存在信息泄露；而 "{}" 会让 SDK 解析失败刷错。
-      if (isStatsigInitializeUrl(parsed.toString())) {
+      // Statsig 评估端点（initialize + 其余 /v1/*）特判：透传回内层实现，而不是回裸 "{}"。
+      // 内层（codex-bridge-polyfill 的 fetch 包装）会为整个 ab.chatgpt.com/v1/* 本地合成
+      // 合法 payload（initialize 给完整 feature_gates，其余给 has_updates:false 最小体），
+      // 请求并不会真的出网，所以透传不存在信息泄露；而 "{}" 缺 has_updates 会让 SDK
+      // 的 _typedJsonParse 解析失败刷 "[Statsig] Failed to parse Response"。
+      if (isStatsigEvaluationUrl(parsed.toString())) {
         return originalFetch(input, init);
       }
       // 按骨架约定，安装完成只代表 ready，命中只能在真实拦截发生时上报。
@@ -184,12 +218,20 @@
       modificationEffects?.primary?.emit();
       // 跳过真实网络请求：loadstart 同步补发，其余状态异步补齐，
       // 因为 SDK 通常在 send 返回之后才注册 load 监听器。
-      // initialize 端点改用完整 payload 作为响应体（SDK 必须能解析出 feature_gates 等
-      // 字段），其余被拦 URL 维持裸 "{}"。
-      const responseBody =
-        isStatsigInitializeUrl(xhr.__opencodexNetworkUrl || "")
-          ? statsigInitializeBody()
-          : MOCK_RESPONSE_BODY;
+      // Statsig 评估端点不用裸 "{}"：initialize 走全局钩子取完整 payload（SDK 必须能
+      // 解析出 feature_gates 等字段），其余评估路径走最小合法体（has_updates:false），
+      // 两者都满足 _typedJsonParse 的 has_updates 键校验；其余被拦 URL 维持裸 "{}"。
+      const rawUrl = String(xhr.__opencodexNetworkUrl || "");
+      let responseBody = MOCK_RESPONSE_BODY;
+      if (isStatsigInitializeUrl(rawUrl)) {
+        responseBody = statsigInitializeBody();
+      } else if (isStatsigEvaluationUrl(rawUrl)) {
+        let pathname = "";
+        try {
+          pathname = new URL(rawUrl, location.href).pathname;
+        } catch {}
+        responseBody = statsigEvaluationBody(pathname);
+      }
       safeDispatch(xhr, "loadstart");
       scheduler.setTimeout(() => {
         defineReadOnly(xhr, "status", 200);
