@@ -214,9 +214,23 @@ test("the Statsig initialize endpoint keeps a parseable payload past the guard",
     layer_configs: {},
   };
   harness.window.__OpenCodexStatsigInitializeFallback = () => fullPayload;
+  // 非 initialize 评估端点的构造器（polyfill 暴露给 guard XHR 通道复用）：
+  // has_updates:false 表示"无更新"，SDK 不会再要求内容，但键必须存在。
+  const minimalPayload = (pathname) => ({
+    has_updates: false,
+    time: 0,
+    feature_gates: {},
+    dynamic_configs: {},
+    layer_configs: {},
+    checksum: String(pathname || "").includes("deltas") ? "0" : undefined,
+  });
+  harness.window.__OpenCodexStatsigEvaluationFallback = (pathname) => minimalPayload(pathname);
   harness.install();
 
   const initializeUrl = "https://ab.chatgpt.com/v1/initialize?client=web";
+  // download_config_specs 等其余评估端点：SDK 同样过 _typedJsonParse(body, "has_updates")，
+  // 裸 "{}" 缺键必刷 parse error，所以 fetch 要透传、XHR 要回含 has_updates 的合法体。
+  const configSpecsUrl = "https://ab.chatgpt.com/v1/download_config_specs?config_client=js-client&time=0";
 
   // fetch 通道：命中 block 但属于 initialize 端点时必须透传回内层实现
   // （polyfill 本地合成完整 payload，不出网），而不是回裸 "{}"。
@@ -224,6 +238,13 @@ test("the Statsig initialize endpoint keeps a parseable payload past the guard",
   assert.equal(fetchResponse.native, true, "initialize fetch must pass through to the inner implementation");
   assert.equal(harness.calls.fetch.length, 1, "initialize fetch must reach the inner fetch wrapper");
   assert.equal(harness.scope.emits, 0, "passthrough traffic must not report a hit");
+
+  // 其余评估端点的 fetch 同样透传：内层 polyfill 会在 initialize 特判之后、出网之前
+  // 合成最小合法体，所以透传安全且 SDK 能解析。
+  const specsResponse = await harness.window.fetch(configSpecsUrl);
+  assert.equal(specsResponse.native, true, "download_config_specs fetch must pass through to the inner implementation");
+  assert.equal(harness.calls.fetch.length, 2);
+  assert.equal(harness.scope.emits, 0, "evaluation passthrough must not report a hit");
 
   // XHR 通道：响应体必须取自全局 payload 构造器，保持形状合法。
   const xhr = new harness.FakeXHR();
@@ -236,6 +257,18 @@ test("the Statsig initialize endpoint keeps a parseable payload past the guard",
   assert.equal(xhr.readyState, 4);
   assert.deepEqual(JSON.parse(xhr.responseText), fullPayload, "XHR must carry the full Statsig payload");
   assert.notEqual(xhr.responseText, "{}", "initialize must never be answered with bare {}");
+
+  // 非 initialize 评估端点的 XHR：响应体必须可 JSON.parse 且含 has_updates 键。
+  const specsXhr = new harness.FakeXHR();
+  specsXhr.open("GET", configSpecsUrl);
+  specsXhr.send(null);
+  assert.equal(harness.calls.send.length, 0, "download_config_specs XHR must not reach the native send");
+  harness.scheduler.flush();
+  assert.equal(specsXhr.status, 200);
+  assert.equal(specsXhr.readyState, 4);
+  const specsBody = JSON.parse(specsXhr.responseText);
+  assert.equal(specsBody.has_updates, false, "non-initialize evaluation must carry has_updates");
+  assert.notEqual(specsXhr.responseText, "{}", "evaluation endpoints must never be answered with bare {}");
 
   // 遥测端点语义不变：SDK 只关心 200、不解析响应体，"{}" 足够。
   // 用一个明确被封、且不属于 Statsig 任何特判通道的 URL 验证既有语义不被本次修改影响。
@@ -259,18 +292,35 @@ test("the Statsig initialize endpoint keeps a parseable payload past the guard",
 });
 
 test("the bridge polyfill exposes the initialize payload builder for the network guard", () => {
-  // 源码级契约：polyfill 必须把构造器挂到命名空间全局，guard 必须消费它做 initialize 特判，
-  // 否则两层包装叠起来会用裸 "{}" 应答 initialize，SDK 会持续解析失败。
+  // 源码级契约：polyfill 必须把两个构造器挂到命名空间全局，guard 必须消费它们做
+  // 评估端点特判（initialize 完整 payload / 其余 has_updates:false 最小体），
+  // 否则两层包装叠起来会用裸 "{}" 应答，SDK 的 _typedJsonParse 缺 has_updates 键必刷 parse error。
   assert.ok(
     BRIDGE_POLYFILL_SOURCE.includes(
       "w.__OpenCodexStatsigInitializeFallback = buildStatsigInitializeResponse"
     ),
     "polyfill must expose the payload builder on the namespace global"
   );
+  assert.ok(
+    BRIDGE_POLYFILL_SOURCE.includes(
+      "w.__OpenCodexStatsigEvaluationFallback = buildStatsigEvaluationResponse"
+    ),
+    "polyfill must expose the evaluation payload builder on the namespace global"
+  );
   assert.ok(PROVIDER_SOURCE.includes("isStatsigInitializeUrl"), "guard must recognize the initialize endpoint");
   assert.ok(
-    PROVIDER_SOURCE.includes("__OpenCodexStatsigInitializeFallback"),
-    "guard must consume the exposed payload builder"
+    PROVIDER_SOURCE.includes("isStatsigEvaluationUrl"),
+    "guard must recognize the whole /v1/* evaluation surface"
+  );
+  assert.ok(
+    PROVIDER_SOURCE.includes("__OpenCodexStatsigInitializeFallback") &&
+      PROVIDER_SOURCE.includes("__OpenCodexStatsigEvaluationFallback"),
+    "guard must consume both exposed payload builders"
+  );
+  // 最小体必须满足 _typedJsonParse 的 has_updates 键校验。
+  assert.ok(
+    BRIDGE_POLYFILL_SOURCE.includes("has_updates: false"),
+    "evaluation fallback body must declare has_updates:false"
   );
 });
 

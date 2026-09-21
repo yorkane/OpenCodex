@@ -3444,6 +3444,51 @@
     }
   }
 
+  // Statsig 评估端点（ab.chatgpt.com/v1/*）的宽松匹配：除了 /v1/initialize 之外，
+  // SDK 还会请求 /v1/download_config_specs、/v1/eval、/v1/deltas、live overlay 变体等，
+  // 这些响应同样要经过 _typedJsonParse 的类型校验，所以也要本地合成而不是真的出网。
+  function isStatsigEvaluationUrl(url) {
+    try {
+      const parsed = new URL(url, location.href);
+      return parsed.hostname === "ab.chatgpt.com" && parsed.pathname.replace(/\/+$/, "").startsWith("/v1/");
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 非 initialize 评估端点的最小合法响应。
+   * SDK 的 _typedJsonParse(body, "has_updates", "Response") 要求任何评估端点响应都是
+   * 带 has_updates 键的 JSON 对象，缺键即打 "Failed to parse Response"；has_updates:false
+   * 表示"无更新"，SDK 不会再要求内容。deltas 路径按 pathname 附加 checksum，
+   * live overlay 路径附加 response_mode，避免对应分支的二次校验失败。
+   */
+  function buildStatsigEvaluationResponse(pathname) {
+    const path = String(pathname || "").replace(/\/+$/, "");
+    const body = {
+      has_updates: false,
+      time: Date.now(),
+      hash_used: "djb2",
+      feature_gates: {},
+      dynamic_configs: {},
+      layer_configs: {},
+      param_stores: {},
+      exposures: {},
+      sdk_flags: {},
+    };
+    if (path.includes("deltas") || path.includes("delta")) {
+      body.checksum = "0";
+    }
+    if (path.includes("overlay")) {
+      body.response_mode = "full";
+    }
+    return body;
+  }
+
+  // 同 initialize 钩子的暴露方式：guard 的 XHR 通道命中非 initialize 评估端点时，
+  // 直接复用本构造器合成最小合法体，保证两层包装给出的响应形状一致。
+  w.__OpenCodexStatsigEvaluationFallback = buildStatsigEvaluationResponse;
+
   function isTelemetryRegisterUrl(url) {
     try {
       const parsed = new URL(url, location.href);
@@ -3472,6 +3517,19 @@
       }
       if (isStatsigInitializeUrl(url)) {
         return new Response(JSON.stringify(buildStatsigInitializeResponse()), {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      }
+      // 其余评估端点（download_config_specs / eval / deltas / overlay）同样本地合成：
+      // 必须在 initialize 特判之后、透传之前——一旦落到 originalFetch 就会真的出网，
+      // 而受限网络里这些请求既不该出网也拿不到合法响应。
+      if (isStatsigEvaluationUrl(url)) {
+        let pathname = "";
+        try {
+          pathname = new URL(url, location.href).pathname;
+        } catch {}
+        return new Response(JSON.stringify(buildStatsigEvaluationResponse(pathname)), {
           status: 200,
           headers: { "content-type": "application/json; charset=utf-8" },
         });
