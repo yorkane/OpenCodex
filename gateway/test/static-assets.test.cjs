@@ -1009,8 +1009,11 @@ test("patched official renderer removes eager font preloads but preserves other 
   const html = createService(webviewDir).createRendererResponse();
 
   assert.doesNotMatch(html, /<link[^>]+as="font"/);
-  assert.ok(
-    html.includes(`<link rel="preload" href="${PATCHED_OFFICIAL_PREFIX}assets/app.js?fp=`)
+  // 资源引用必须落在带目录版本位的命名空间里，相对动态导入才能继承同一失效位。
+  const vpRoot = PATCHED_OFFICIAL_PREFIX.replace(/\/+$/, "");
+  assert.match(
+    html,
+    new RegExp(`<link rel="preload" href="${vpRoot}-[A-Za-z0-9_-]{10}/assets/app\\.js`)
   );
 });
 
@@ -1141,27 +1144,30 @@ test("pre-renders escaped recent threads and preloads official startup modules",
   assert.match(html, /data-opencodex-sidebar-preview-ready/);
   assert.match(html, /&lt;img src=x onerror=&quot;bad&quot;&gt;/);
   assert.doesNotMatch(html, /<img src=x/);
-  assert.match(html, new RegExp(`${PATCHED_OFFICIAL_PREFIX}assets/index-test\\.js`));
-  assert.match(html, new RegExp(`${PATCHED_OFFICIAL_PREFIX}assets/app-initial-test\\.js`));
-  assert.match(html, new RegExp(`${PATCHED_OFFICIAL_PREFIX}assets/app-initial-test\\.css`));
-  // preload 必须继承正式样式的 CORS 模式，否则浏览器会把同一份首屏 CSS 下载两次。
-  assert.match(
+  // 目录版本位存在时，引用应整体落在 /official-patched-v8-<fp>/ 下
+  const vpRoot = PATCHED_OFFICIAL_PREFIX.replace(/\/+$/, "");
+  const vp = `${vpRoot}(?:-[A-Za-z0-9_-]{10})?/`;
+  assert.match(html, new RegExp(`${vp}assets/index-test\\.js`));
+  assert.match(html, new RegExp(`${vp}assets/app-initial-test\\.js`));
+  assert.match(html, new RegExp(`${vp}assets/app-initial-test\\.css`));
+    // preload 必须继承正式样式的 CORS 模式，否则浏览器会把同一份首屏 CSS 下载两次。
+    assert.match(
     html,
     new RegExp(
-      `link rel="preload" as="style" crossorigin href="${PATCHED_OFFICIAL_PREFIX}assets/app-initial-test\\.css\\?fp=[A-Za-z0-9_-]{10}"`
+      `link rel="preload" as="style" crossorigin href="${vpRoot}-[A-Za-z0-9_-]{10}/assets/app-initial-test\\.css\\?fp=[A-Za-z0-9_-]{10}"`
     )
   );
   assert.match(
     html,
-    new RegExp(`meta name="opencodex-late-modulepreload" content="${PATCHED_OFFICIAL_PREFIX}assets/zh-CN-Locale01\\.js\\?fp=[A-Za-z0-9_-]{10}"`)
+    new RegExp(`meta name="opencodex-late-modulepreload" content="${vpRoot}-[A-Za-z0-9_-]{10}/assets/zh-CN-Locale01\\.js\\?fp=[A-Za-z0-9_-]{10}"`)
   );
-  assert.match(html, new RegExp(`${PATCHED_OFFICIAL_PREFIX}assets/thread-app-shell-chrome-Wrapper01\\.js`));
-  assert.doesNotMatch(html, /thread-app-shell-chrome-Implementation01\.js/);
-  assert.match(html, new RegExp(`${PATCHED_OFFICIAL_PREFIX}assets/home-ambient-suggestions-content-Home01\\.js`));
-  assert.match(html, new RegExp(`${PATCHED_OFFICIAL_PREFIX}assets/codex-home-announcements-Wrapper01\\.js`));
-  assert.doesNotMatch(
+  assert.match(html, new RegExp(`${vp}assets/thread-app-shell-chrome-Wrapper01\\.js`));
+    assert.doesNotMatch(html, /thread-app-shell-chrome-Implementation01\.js/);
+  assert.match(html, new RegExp(`${vp}assets/home-ambient-suggestions-content-Home01\\.js`));
+  assert.match(html, new RegExp(`${vp}assets/codex-home-announcements-Wrapper01\\.js`));
+    assert.doesNotMatch(
     html,
-    new RegExp(`link rel="modulepreload"[^>]+${PATCHED_OFFICIAL_PREFIX}assets/zh-CN-Locale01\\.js`)
+    new RegExp(`link rel="modulepreload"[^>]+${PATCHED_OFFICIAL_PREFIX}(?:-[A-Za-z0-9_-]{10})?/assets/zh-CN-Locale01\\.js`)
   );
   assert.ok(html.indexOf('rel="modulepreload"') < html.indexOf('/codex-web-config.js'));
 });
@@ -2081,12 +2087,59 @@ test("html rewrite emits fingerprint on every patched-namespace url", (t) => {
   });
   const html = service.createRendererResponse();
   const token = service.currentPatchedFingerprintToken();
-  // 所有指向 patched 命名空间的 URL（script/preload 改写与 late-modulepreload meta）必须同一指纹。
-  const parts = html.split(PATCHED_OFFICIAL_PREFIX + "assets/").slice(1);
-  assert.ok(parts.length >= 3, "expected multiple patched urls, got " + parts.length);
+  // 所有指向 patched 命名空间的 URL 必须同时带目录版本位与 ?fp=：
+  // 目录版本位覆盖不携带 query 的相对动态导入，?fp= 覆盖显式引用。
+  const versioned = `${PATCHED_OFFICIAL_PREFIX.replace(/\/+$/, "")}-${token}/assets/`;
+  const parts = html.split(versioned).slice(1);
+  assert.ok(parts.length >= 3, "expected multiple versioned patched urls, got " + parts.length);
   for (const part of parts) {
     assert.match(part.slice(0, 80), new RegExp("^[A-Za-z0-9._-]+\\?fp=" + token), "patched url missing fingerprint: " + part);
   }
+  // 未版本化的裸前缀不应再出现在生成结果里，否则相对导入会退回校验缓存。
+  assert.doesNotMatch(html, new RegExp(`${PATCHED_OFFICIAL_PREFIX.replace(/\/+$/, "")}/assets/`));
+});
+
+test("versioned patched directory stays immutable without any query", (t) => {
+  const webviewDir = makeOfficialWebviewDir(t);
+  const assetsDir = path.join(webviewDir, "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+  // 远端 locale chunk 会被响应期 patch，未版本化时必须每次校验。
+  fs.writeFileSync(
+    path.join(assetsDir, "locale-VersTest.js"),
+    'export default {"artifactTab.preview.openInFolder":"Open in folder"};'
+  );
+  const service = createStaticAssetService({
+    getI18nSnapshot: () => ({
+      locale: "zh-CN",
+      messages: { "web.remoteFile.downloadFile": "下载文件" },
+    }),
+    getOfficialBundle: () => ({ webviewDir }),
+  });
+  const token = service.currentPatchedFingerprintToken();
+  const root = PATCHED_OFFICIAL_PREFIX.replace(/\/+$/, "");
+  // 目录版本位是主失效位：官方 chunk 的相对动态导入不带 query，只能靠目录继承版本。
+  const versioned = root + "-" + token + "/assets/locale-VersTest.js";
+  const res = servePatchedWithFp(service, versioned, "192.168.60.218:3737", "");
+  assert.equal(res.status, 200);
+  assert.equal(res.headers["cache-control"], "public, max-age=31536000, immutable");
+  assert.match(res.body.toString("utf-8"), /下载文件/);
+  // 版本位写错（内容已变而旧页面仍引用旧目录）时退回校验语义，不固化旧补丁。
+  const stale = servePatchedWithFp(
+    service,
+    root + "-ZZZZZZZZZZ/assets/locale-VersTest.js",
+    "192.168.60.218:3737",
+    ""
+  );
+  assert.equal(stale.status, 200);
+  assert.equal(stale.headers["cache-control"], "private, no-cache, must-revalidate");
+  // 未版本化的规范前缀保持原有校验语义，只服务浏览器残留的懒加载。
+  const legacy = servePatchedWithFp(
+    service,
+    PATCHED_OFFICIAL_PREFIX + "assets/locale-VersTest.js",
+    "192.168.60.218:3737",
+    ""
+  );
+  assert.equal(legacy.headers["cache-control"], "private, no-cache, must-revalidate");
 });
 
 test("patched fingerprint changes when patch-affecting locale message changes", (t) => {
