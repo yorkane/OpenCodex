@@ -4,6 +4,14 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
+
+/**
+ * 站点配置必须在 require 依赖模块之前定死来源。
+ * 本套件会继承宿主进程的 CODEX_WEB_CONFIG_PATH（例如在网关进程内跑测试时指向真实部署配置），
+ * 那样品牌用例会随外部 config.yaml 变化而飘；这里钉到一个不存在的路径，等价于“未配置”。
+ */
+process.env.CODEX_WEB_CONFIG_PATH = path.join(os.tmpdir(), "opencodex-static-assets-test-absent-config.yaml");
+
 const { PATCHED_OFFICIAL_PREFIX } = require("../runtime/core/config.cjs");
 const {
   listPluginEntries,
